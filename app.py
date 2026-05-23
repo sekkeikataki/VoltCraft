@@ -17,6 +17,9 @@ from voltcraft.engine.scraper import DatasheetScraper
 
 app = FastAPI(title="VoltCraft-Workstation-Server", version="1.0.0")
 
+# Mount static files directory
+app.mount("/static", StaticFiles(directory="voltcraft/static"), name="static")
+
 # Setup base folders
 ROOT_DIR = "voltcraft"
 STORAGE_DIR = os.path.join(ROOT_DIR, "storage")
@@ -624,6 +627,12 @@ async def websocket_agent_channel(websocket: WebSocket):
 # HTML dashboard fallback
 @app.get("/")
 async def get_dashboard():
+    template_path = os.path.join(ROOT_DIR, "templates", "index.html")
+    if os.path.exists(template_path):
+        with open(template_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        return HTMLResponse(content=content)
+    
     dashboard_html = """<!DOCTYPE html>
 <html>
 <head>
