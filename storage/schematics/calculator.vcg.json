@@ -9,149 +9,664 @@
     {
       "id": "V_bat",
       "type": "voltage_source",
-      "params": {"V": 5.0},
-      "pos": {"x": 40.0, "y": 40.0},
-      "rot": 90,
-      "pins": {"a": "v_cc", "b": "n0"}
+      "params": {
+        "V": 5
+      },
+      "pos": {
+        "x": 40,
+        "y": 40
+      },
+      "rot": 180,
+      "pins": {
+        "a": "v_cc",
+        "b": "n0"
+      }
     },
     {
       "id": "V_A",
       "type": "voltage_source",
-      "params": {"V": 5.0, "freq": 1000.0, "phase": 0.0},
-      "pos": {"x": 40.0, "y": 140.0},
-      "rot": 90,
-      "pins": {"a": "in_A", "b": "n0"}
+      "params": {
+        "V": 5,
+        "freq": 1000,
+        "phase": 0
+      },
+      "pos": {
+        "x": 40,
+        "y": 140
+      },
+      "rot": 180,
+      "pins": {
+        "a": "in_A",
+        "b": "n0"
+      }
     },
     {
       "id": "V_B",
       "type": "voltage_source",
-      "params": {"V": 5.0, "freq": 500.0, "phase": 1.57},
-      "pos": {"x": 40.0, "y": 240.0},
-      "rot": 90,
-      "pins": {"a": "in_B", "b": "n0"}
+      "params": {
+        "V": 5,
+        "freq": 500,
+        "phase": 1.57
+      },
+      "pos": {
+        "x": 40,
+        "y": 240
+      },
+      "rot": 180,
+      "pins": {
+        "a": "in_B",
+        "b": "n0"
+      }
     },
     {
       "id": "V_Sub",
       "type": "voltage_source",
-      "params": {"V": 5.0, "freq": 250.0, "phase": 0.0},
-      "pos": {"x": 40.0, "y": 340.0},
-      "rot": 90,
-      "pins": {"a": "ctrl_Sub", "b": "n0"}
+      "params": {
+        "V": 5,
+        "freq": 250,
+        "phase": 0
+      },
+      "pos": {
+        "x": 40,
+        "y": 340
+      },
+      "rot": 180,
+      "pins": {
+        "a": "ctrl_Sub",
+        "b": "n0"
+      }
     },
     {
       "id": "COMP_A",
       "type": "analog_comparator",
-      "params": {"threshold": 2.5},
-      "pos": {"x": 160.0, "y": 140.0},
+      "params": {
+        "threshold": 2.5
+      },
+      "pos": {
+        "x": 160,
+        "y": 140
+      },
       "rot": 0,
-      "pins": {"analog_in": "in_A", "digital_out": "d_A"}
+      "pins": {
+        "analog_in": "in_A",
+        "digital_out": "d_A"
+      }
     },
     {
       "id": "COMP_B",
       "type": "analog_comparator",
-      "params": {"threshold": 2.5},
-      "pos": {"x": 160.0, "y": 240.0},
+      "params": {
+        "threshold": 2.5
+      },
+      "pos": {
+        "x": 160,
+        "y": 240
+      },
       "rot": 0,
-      "pins": {"analog_in": "in_B", "digital_out": "d_B"}
+      "pins": {
+        "analog_in": "in_B",
+        "digital_out": "d_B"
+      }
     },
     {
       "id": "COMP_Sub",
       "type": "analog_comparator",
-      "params": {"threshold": 2.5},
-      "pos": {"x": 160.0, "y": 340.0},
+      "params": {
+        "threshold": 2.5
+      },
+      "pos": {
+        "x": 160,
+        "y": 340
+      },
       "rot": 0,
-      "pins": {"analog_in": "ctrl_Sub", "digital_out": "d_Sub"}
+      "pins": {
+        "analog_in": "ctrl_Sub",
+        "digital_out": "d_Sub"
+      }
     },
     {
       "id": "XOR_B",
       "type": "digital_xor",
-      "params": {"delay": 1e-6},
-      "pos": {"x": 280.0, "y": 240.0},
+      "params": {
+        "delay": 1e-06
+      },
+      "pos": {
+        "x": 280,
+        "y": 240
+      },
       "rot": 0,
-      "pins": {"a": "d_B", "b": "d_Sub", "out": "d_B_xor"}
+      "pins": {
+        "a": "d_B",
+        "b": "d_Sub",
+        "out": "d_B_xor"
+      }
     },
     {
       "id": "XOR_Sum1",
       "type": "digital_xor",
-      "params": {"delay": 1e-6},
-      "pos": {"x": 400.0, "y": 140.0},
+      "params": {
+        "delay": 1e-06
+      },
+      "pos": {
+        "x": 400,
+        "y": 140
+      },
       "rot": 0,
-      "pins": {"a": "d_A", "b": "d_B_xor", "out": "d_sum_mid"}
+      "pins": {
+        "a": "d_A",
+        "b": "d_B_xor",
+        "out": "d_sum_mid"
+      }
     },
     {
       "id": "XOR_Sum2",
       "type": "digital_xor",
-      "params": {"delay": 1e-6},
-      "pos": {"x": 520.0, "y": 140.0},
+      "params": {
+        "delay": 1e-06
+      },
+      "pos": {
+        "x": 520,
+        "y": 140
+      },
       "rot": 0,
-      "pins": {"a": "d_sum_mid", "b": "d_Sub", "out": "d_Sum"}
+      "pins": {
+        "a": "d_sum_mid",
+        "b": "d_Sub",
+        "out": "d_Sum"
+      }
     },
     {
       "id": "AND_Carry1",
       "type": "digital_and",
-      "params": {"delay": 1e-6},
-      "pos": {"x": 400.0, "y": 260.0},
+      "params": {
+        "delay": 1e-06
+      },
+      "pos": {
+        "x": 400,
+        "y": 260
+      },
       "rot": 0,
-      "pins": {"a": "d_A", "b": "d_B_xor", "out": "d_c1"}
+      "pins": {
+        "a": "d_A",
+        "b": "d_B_xor",
+        "out": "d_c1"
+      }
     },
     {
       "id": "AND_Carry2",
       "type": "digital_and",
-      "params": {"delay": 1e-6},
-      "pos": {"x": 520.0, "y": 260.0},
+      "params": {
+        "delay": 1e-06
+      },
+      "pos": {
+        "x": 520,
+        "y": 260
+      },
       "rot": 0,
-      "pins": {"a": "d_sum_mid", "b": "d_Sub", "out": "d_c2"}
+      "pins": {
+        "a": "d_sum_mid",
+        "b": "d_Sub",
+        "out": "d_c2"
+      }
     },
     {
       "id": "OR_Carry",
       "type": "digital_or",
-      "params": {"delay": 1e-6},
-      "pos": {"x": 640.0, "y": 260.0},
+      "params": {
+        "delay": 1e-06
+      },
+      "pos": {
+        "x": 640,
+        "y": 260
+      },
       "rot": 0,
-      "pins": {"a": "d_c1", "b": "d_c2", "out": "d_Cout"}
+      "pins": {
+        "a": "d_c1",
+        "b": "d_c2",
+        "out": "d_Cout"
+      }
     },
     {
       "id": "INT_Sum",
       "type": "digital_interface_out",
-      "params": {"V": 5.0, "delay": 0.0},
-      "pos": {"x": 760.0, "y": 140.0},
+      "params": {
+        "V": 5,
+        "delay": 0
+      },
+      "pos": {
+        "x": 760,
+        "y": 140
+      },
       "rot": 0,
-      "pins": {"digital_in": "d_Sum", "analog_out": "v_Sum"}
+      "pins": {
+        "digital_in": "d_Sum",
+        "analog_out": "v_Sum"
+      }
     },
     {
       "id": "INT_Cout",
       "type": "digital_interface_out",
-      "params": {"V": 5.0, "delay": 0.0},
-      "pos": {"x": 760.0, "y": 260.0},
+      "params": {
+        "V": 5,
+        "delay": 0
+      },
+      "pos": {
+        "x": 760,
+        "y": 260
+      },
       "rot": 0,
-      "pins": {"digital_in": "d_Cout", "analog_out": "v_Cout"}
+      "pins": {
+        "digital_in": "d_Cout",
+        "analog_out": "v_Cout"
+      }
     }
   ],
   "edges": [
     {
-      "id": "w1",
+      "id": "w_inA",
       "net": "in_A",
-      "path": [[40.0, 140.0], [160.0, 140.0]]
+      "path": [
+        [
+          120,
+          160
+        ],
+        [
+          160,
+          160
+        ]
+      ]
     },
     {
-      "id": "w2",
+      "id": "w_inB",
       "net": "in_B",
-      "path": [[40.0, 240.0], [160.0, 240.0]]
+      "path": [
+        [
+          120,
+          260
+        ],
+        [
+          160,
+          260
+        ]
+      ]
     },
     {
-      "id": "w3",
+      "id": "w_ctrlSub",
       "net": "ctrl_Sub",
-      "path": [[40.0, 340.0], [160.0, 340.0]]
+      "path": [
+        [
+          120,
+          360
+        ],
+        [
+          160,
+          360
+        ]
+      ]
     },
     {
-      "id": "w4",
+      "id": "w_dA1",
+      "net": "d_A",
+      "path": [
+        [
+          260,
+          160
+        ],
+        [
+          330,
+          160
+        ],
+        [
+          330,
+          150
+        ],
+        [
+          400,
+          150
+        ]
+      ]
+    },
+    {
+      "id": "w_dA2",
+      "net": "d_A",
+      "path": [
+        [
+          260,
+          160
+        ],
+        [
+          330,
+          160
+        ],
+        [
+          330,
+          270
+        ],
+        [
+          400,
+          270
+        ]
+      ]
+    },
+    {
+      "id": "w_dB",
+      "net": "d_B",
+      "path": [
+        [
+          260,
+          260
+        ],
+        [
+          270,
+          260
+        ],
+        [
+          270,
+          250
+        ],
+        [
+          280,
+          250
+        ]
+      ]
+    },
+    {
+      "id": "w_dSub1",
+      "net": "d_Sub",
+      "path": [
+        [
+          260,
+          360
+        ],
+        [
+          270,
+          360
+        ],
+        [
+          270,
+          270
+        ],
+        [
+          280,
+          270
+        ]
+      ]
+    },
+    {
+      "id": "w_dSub2",
+      "net": "d_Sub",
+      "path": [
+        [
+          260,
+          360
+        ],
+        [
+          270,
+          360
+        ],
+        [
+          270,
+          320
+        ],
+        [
+          490,
+          320
+        ],
+        [
+          490,
+          170
+        ],
+        [
+          520,
+          170
+        ]
+      ]
+    },
+    {
+      "id": "w_dSub3",
+      "net": "d_Sub",
+      "path": [
+        [
+          260,
+          360
+        ],
+        [
+          270,
+          360
+        ],
+        [
+          270,
+          320
+        ],
+        [
+          490,
+          320
+        ],
+        [
+          490,
+          290
+        ],
+        [
+          520,
+          290
+        ]
+      ]
+    },
+    {
+      "id": "w_dBxor1",
+      "net": "d_B_xor",
+      "path": [
+        [
+          380,
+          260
+        ],
+        [
+          390,
+          260
+        ],
+        [
+          390,
+          170
+        ],
+        [
+          400,
+          170
+        ]
+      ]
+    },
+    {
+      "id": "w_dBxor2",
+      "net": "d_B_xor",
+      "path": [
+        [
+          380,
+          260
+        ],
+        [
+          390,
+          260
+        ],
+        [
+          390,
+          290
+        ],
+        [
+          400,
+          290
+        ]
+      ]
+    },
+    {
+      "id": "w_dsummid1",
+      "net": "d_sum_mid",
+      "path": [
+        [
+          500,
+          160
+        ],
+        [
+          510,
+          160
+        ],
+        [
+          510,
+          150
+        ],
+        [
+          520,
+          150
+        ]
+      ]
+    },
+    {
+      "id": "w_dsummid2",
+      "net": "d_sum_mid",
+      "path": [
+        [
+          500,
+          160
+        ],
+        [
+          510,
+          160
+        ],
+        [
+          510,
+          270
+        ],
+        [
+          520,
+          270
+        ]
+      ]
+    },
+    {
+      "id": "w_dSum",
+      "net": "d_Sum",
+      "path": [
+        [
+          620,
+          160
+        ],
+        [
+          760,
+          160
+        ]
+      ]
+    },
+    {
+      "id": "w_dc1",
+      "net": "d_c1",
+      "path": [
+        [
+          500,
+          280
+        ],
+        [
+          570,
+          280
+        ],
+        [
+          570,
+          270
+        ],
+        [
+          640,
+          270
+        ]
+      ]
+    },
+    {
+      "id": "w_dc2",
+      "net": "d_c2",
+      "path": [
+        [
+          620,
+          280
+        ],
+        [
+          630,
+          280
+        ],
+        [
+          630,
+          290
+        ],
+        [
+          640,
+          290
+        ]
+      ]
+    },
+    {
+      "id": "w_dCout",
+      "net": "d_Cout",
+      "path": [
+        [
+          740,
+          280
+        ],
+        [
+          760,
+          280
+        ]
+      ]
+    },
+    {
+      "id": "w_vSum",
       "net": "v_Sum",
-      "path": [[760.0, 140.0], [860.0, 140.0]]
+      "path": [
+        [
+          860,
+          160
+        ],
+        [
+          920,
+          160
+        ]
+      ]
     },
     {
-      "id": "w5",
+      "id": "w_vCout",
       "net": "v_Cout",
-      "path": [[760.0, 260.0], [860.0, 260.0]]
+      "path": [
+        [
+          860,
+          280
+        ],
+        [
+          920,
+          280
+        ]
+      ]
+    },
+    {
+      "id": "w_gnd_bus",
+      "net": "n0",
+      "path": [
+        [
+          20,
+          60
+        ],
+        [
+          20,
+          360
+        ]
+      ]
+    },
+    {
+      "id": "w_vcc",
+      "net": "v_cc",
+      "path": [
+        [
+          120,
+          60
+        ],
+        [
+          160,
+          60
+        ]
+      ]
     }
   ],
   "nets": [

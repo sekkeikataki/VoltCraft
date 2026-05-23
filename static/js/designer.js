@@ -270,7 +270,7 @@ class VoltCraftDesigner {
                 circle.setAttribute("fill", "#f59e0b"); // Neon amber
                 circle.setAttribute("stroke", "#d97706");
                 circle.setAttribute("stroke-width", "1");
-                circle.className = "cursor-pointer hover:scale-125 transition-transform duration-100";
+                circle.setAttribute("class", "cursor-pointer hover:scale-125 transition-transform duration-100");
 
                 // Tooltip
                 circle.innerHTML = `<title>${node.id}:${pinName} (Net: ${node.pins[pinName]})</title>`;
