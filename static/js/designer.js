@@ -14,7 +14,7 @@ class VoltCraftDesigner {
 
         // SVG symbol path descriptions
         this.symbols = {
-            resistor: "M 0 20 L 20 20 L 25 10 L 35 30 L 45 10 L 55 30 L 65 10 L 75 30 L 80 20 L 100 20",
+            resistor: "M 0 20 L 30 20 L 30 10 L 70 10 L 70 30 L 30 30 L 30 20 M 70 20 L 100 20",
             capacitor: "M 0 20 L 45 20 M 45 5 L 45 35 M 55 5 L 55 35 M 55 20 L 100 20",
             inductor: "M 0 20 L 20 20 C 25 30, 35 30, 40 20 C 45 30, 55 30, 60 20 C 65 30, 75 30, 80 20 L 100 20",
             diode: "M 0 20 L 40 20 M 40 5 L 40 35 L 60 20 Z M 60 5 L 60 35 M 60 20 L 100 20",
