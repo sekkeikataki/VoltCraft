@@ -39,8 +39,12 @@ class VoltCraftDesigner {
         // Tool button placing mode selection
         document.querySelectorAll(".tool-btn").forEach(btn => {
             btn.addEventListener("click", (e) => {
-                document.querySelectorAll(".tool-btn").forEach(b => b.classList.remove("bg-cyan-900/60", "text-cyan-400"));
-                btn.classList.add("bg-cyan-900/60", "text-cyan-400");
+                document.querySelectorAll(".tool-btn").forEach(b => {
+                    b.classList.remove("bg-cyan-950", "border-cyan-500/50", "text-cyan-400", "shadow-[0_0_10px_rgba(6,182,212,0.2)]");
+                    b.classList.add("bg-gray-950/40", "border-gray-800", "text-gray-400");
+                });
+                btn.classList.remove("bg-gray-950/40", "border-gray-800", "text-gray-400");
+                btn.classList.add("bg-cyan-950", "border-cyan-500/50", "text-cyan-400", "shadow-[0_0_10px_rgba(6,182,212,0.2)]");
                 this.placingType = btn.getAttribute("data-type");
             });
         });
@@ -56,7 +60,7 @@ class VoltCraftDesigner {
 
         // Click on SVG canvas to place
         this.svg.addEventListener("click", (e) => {
-            if (e.target === this.svg && this.placingType) {
+            if (this.placingType && !e.target.closest("g") && e.target.tagName !== "path") {
                 const rect = this.svg.getBoundingClientRect();
                 const rawX = (e.clientX - rect.left) / this.scale;
                 const rawY = (e.clientY - rect.top) / this.scale;
@@ -70,7 +74,10 @@ class VoltCraftDesigner {
                 
                 // Reset tool selection
                 this.placingType = null;
-                document.querySelectorAll(".tool-btn").forEach(b => b.classList.remove("bg-cyan-900/60", "text-cyan-400"));
+                document.querySelectorAll(".tool-btn").forEach(b => {
+                    b.classList.remove("bg-cyan-950", "border-cyan-500/50", "text-cyan-400", "shadow-[0_0_10px_rgba(6,182,212,0.2)]");
+                    b.classList.add("bg-gray-950/40", "border-gray-800", "text-gray-400");
+                });
             }
         });
 

@@ -295,6 +295,10 @@ async def execute_agent_action(payload: AgentAction):
                 pins = {"anode": "n0", "cathode": "n0"}
             elif comp_type == "opamp":
                 pins = {"non_inverting": "n0", "inverting": "n0", "out": "n0"}
+            elif comp_type == "analog_comparator":
+                pins = {"analog_in": "n0", "digital_out": "n0"}
+            elif comp_type == "digital_interface_out":
+                pins = {"digital_in": "n0", "analog_out": "n0"}
             elif comp_type.startswith("digital_"):
                 pins = {"a": "n0", "b": "n0", "out": "n0"}
                 
