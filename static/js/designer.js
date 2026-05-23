@@ -185,7 +185,10 @@ class VoltCraftDesigner {
             // Scale path coordinates
             const scaledPath = symbolPath.split(" ").map(token => {
                 if (token.includes(",")) {
-                    return token.split(",").map(val => parseFloat(val) * this.scale).join(",");
+                    return token.split(",").map(val => {
+                        const parsed = parseFloat(val);
+                        return isNaN(parsed) ? val : parsed * this.scale;
+                    }).join(",");
                 }
                 const floatVal = parseFloat(token);
                 return isNaN(floatVal) ? token : floatVal * this.scale;
