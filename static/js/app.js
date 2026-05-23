@@ -4,7 +4,7 @@ class VoltCraftApp {
      * Manages API fetching, WebSocket sync loops, and state change stacks.
      */
     constructor() {
-        this.activeSchematicPath = "voltcraft/storage/schematics/circuit.vcg.json";
+        this.activeSchematicPath = "voltcraft/storage/schematics/calculator.vcg.json";
         this.graph = {
             schema_version: "1.0.0",
             metadata: { name: "Blank Schematic", created_utc: "2026-05-23T20:38:00Z", author_agent: "Designer" },
