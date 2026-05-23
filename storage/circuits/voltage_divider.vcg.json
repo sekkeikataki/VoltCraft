@@ -1,0 +1,64 @@
+{
+  "schema_version": "1.0.0",
+  "metadata": {
+    "name": "Voltage Divider",
+    "created_utc": "2026-05-23T20:38:00Z",
+    "author_agent": "VoltCraft-Orchestrator"
+  },
+  "nodes": [
+    {
+      "id": "V1",
+      "type": "voltage_source",
+      "params": {
+        "V": 10.0
+      },
+      "pos": {
+        "x": 100,
+        "y": 100
+      },
+      "rot": 0,
+      "pins": {
+        "a": "n1",
+        "b": "n0"
+      }
+    },
+    {
+      "id": "R1",
+      "type": "resistor",
+      "params": {
+        "R": 1000.0
+      },
+      "pos": {
+        "x": 200,
+        "y": 100
+      },
+      "rot": 90,
+      "pins": {
+        "a": "n1",
+        "b": "n2"
+      }
+    },
+    {
+      "id": "R2",
+      "type": "resistor",
+      "params": {
+        "R": 1000.0
+      },
+      "pos": {
+        "x": 200,
+        "y": 200
+      },
+      "rot": 90,
+      "pins": {
+        "a": "n2",
+        "b": "n0"
+      }
+    }
+  ],
+  "edges": [],
+  "nets": [
+    "n0",
+    "n1",
+    "n2"
+  ]
+}

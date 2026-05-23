@@ -1,0 +1,30 @@
+# Python compiled caches
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints
+
+# Test runner caches
+.pytest_cache/
+.cache/
+
+# VoltCraft on-disk scraper caches (Datasheet parameters, robots, etc.)
+storage/cache/
+voltcraft/storage/cache/
+
+# VoltCraft state mutation journals
+storage/journal/
+voltcraft/storage/journal/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# System traces
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.log
