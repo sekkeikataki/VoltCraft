@@ -20,7 +20,12 @@ class VoltCraftDesigner {
             diode: "M 0 20 L 40 20 M 40 5 L 40 35 L 60 20 Z M 60 5 L 60 35 M 60 20 L 100 20",
             voltage_source: "M 0 20 L 30 20 M 70 20 L 100 20 M 50 5 C 41.7 5, 35 11.7, 35 20 C 35 28.3, 41.7 35, 50 35 C 58.3 35, 65 28.3, 65 20 C 65 11.7, 58.3 5, 50 5 M 40 20 L 48 20 M 44 16 L 44 24 M 52 20 L 60 20",
             current_source: "M 0 20 L 30 20 M 70 20 L 100 20 M 50 5 C 41.7 5, 35 11.7, 35 20 C 35 28.3, 41.7 35, 50 35 C 58.3 35, 65 28.3, 65 20 C 65 11.7, 58.3 5, 50 5 M 38 20 L 62 20 M 54 14 L 62 20 L 54 26",
-            opamp: "M 0 10 L 30 10 M 0 30 L 30 30 M 30 0 L 30 40 L 70 20 Z M 70 20 L 100 20"
+            opamp: "M 0 10 L 30 10 M 0 30 L 30 30 M 30 0 L 30 40 L 70 20 Z M 70 20 L 100 20",
+            analog_comparator: "M 0 20 L 30 20 M 30 0 L 30 40 L 70 20 Z M 70 20 L 100 20",
+            digital_and: "M 0 10 L 30 10 M 0 30 L 30 30 M 30 5 L 50 5 A 15 15 0 0 1 50 35 L 30 35 Z M 65 20 L 100 20",
+            digital_or: "M 0 10 L 25 10 M 0 30 L 25 30 M 20 5 C 32 5, 48 10, 65 20 C 48 30, 32 35, 20 35 C 26 26, 26 14, 20 5 Z M 65 20 L 100 20",
+            digital_xor: "M 0 10 L 20 10 M 0 30 L 20 30 M 12 5 C 18 14, 18 26, 12 35 M 20 5 C 26 14, 26 26, 20 35 C 32 5, 48 10, 65 20 C 48 30, 32 35, 20 35 M 65 20 L 100 20",
+            digital_interface_out: "M 0 20 L 30 20 M 70 20 L 100 20 M 30 5 L 70 5 L 70 35 L 30 35 Z"
         };
 
         this.initEvents();
@@ -239,6 +244,16 @@ class VoltCraftDesigner {
                     if (pinName === "non_inverting") { pinX = 0; pinY = 10; }
                     else if (pinName === "inverting") { pinX = 0; pinY = 30; }
                     else if (pinName === "out") { pinX = 100; pinY = 20; }
+                } else if (node.type.startsWith("digital_") && node.type !== "digital_interface_out") {
+                    if (pinName === "a") { pinX = 0; pinY = 10; }
+                    else if (pinName === "b") { pinX = 0; pinY = 30; }
+                    else if (pinName === "out" || pinName === "q" || pinName === "q_bar") { pinX = 100; pinY = 20; }
+                } else if (node.type === "analog_comparator") {
+                    if (pinName === "analog_in") { pinX = 0; pinY = 20; }
+                    else if (pinName === "digital_out") { pinX = 100; pinY = 20; }
+                } else if (node.type === "digital_interface_out") {
+                    if (pinName === "digital_in") { pinX = 0; pinY = 20; }
+                    else if (pinName === "analog_out") { pinX = 100; pinY = 20; }
                 } else {
                     if (pinName === "b" || pinName === "cathode") {
                         pinX = 100;
