@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VoltCraft Autonomous Mechatronics Workbench</title>
     <!-- Precompiled Tailwind CSS -->
-    <link rel="stylesheet" href="/static/css/tailwind.min.css?v=1.0.2">
+    <link rel="stylesheet" href="/static/css/tailwind.min.css?v=1.0.5">
     <!-- Google Fonts Outfit -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -103,7 +103,7 @@
     <main class="flex-1 flex overflow-hidden">
         
         <!-- Left Pane: Toolbox & Interactive SVG CAD Canvas -->
-        <section class="flex-1 flex flex-col border-r border-gray-800/80 bg-[#070919]">
+        <section style="background-color: #070919;" class="flex-1 flex flex-col border-r border-gray-800/80">
             <!-- Canvas Toolbar Controls -->
             <div class="h-10 bg-gray-900/40 border-b border-gray-800/50 flex items-center justify-between px-4 z-20">
                 <div class="flex items-center gap-2">
@@ -131,7 +131,7 @@
         </section>
 
         <!-- Right Pane: Multi-Signal Simulation Viewer & FFT Console -->
-        <section class="w-[420px] flex flex-col bg-[#0b0e24]/90 backdrop-blur-md">
+        <section style="width: 420px; background-color: rgba(11, 14, 36, 0.9); flex-shrink: 0;" class="flex flex-col backdrop-blur-md">
             <!-- Sim Header Controls -->
             <div class="h-10 bg-gray-900/60 border-b border-gray-800/80 flex items-center justify-between px-4">
                 <span class="text-xs font-bold uppercase tracking-wider text-indigo-400 neon-glow-cyan">simulation waveforms</span>
@@ -150,7 +150,7 @@
             <!-- Plot Board Space -->
             <div class="flex-1 flex flex-col p-4 gap-4 overflow-y-auto">
                 <!-- Analog Signal Plot Board -->
-                <div class="h-[240px] glass-panel rounded-xl overflow-hidden flex flex-col">
+                <div style="height: 240px; min-height: 240px; flex-shrink: 0;" class="glass-panel rounded-xl overflow-hidden flex flex-col">
                     <div class="h-8 bg-gray-900/80 border-b border-gray-800/50 flex items-center justify-between px-3">
                         <span class="text-[10px] font-bold uppercase text-gray-400 tracking-wider">analog signal monitor (V)</span>
                         <div class="flex items-center gap-2 text-[9px] font-medium text-cyan-400" id="telemetry-display">
@@ -165,7 +165,7 @@
                 </div>
 
                 <!-- Digital Logic Waveform Panel -->
-                <div class="h-[180px] glass-panel rounded-xl overflow-hidden flex flex-col">
+                <div style="height: 180px; min-height: 180px; flex-shrink: 0;" class="glass-panel rounded-xl overflow-hidden flex flex-col">
                     <div class="h-8 bg-gray-900/80 border-b border-gray-800/50 flex items-center justify-between px-3">
                         <span class="text-[10px] font-bold uppercase text-gray-400 tracking-wider">digital logical analyzer</span>
                         <span class="text-[8px] text-amber-400 font-semibold tracking-wider">Delta Timeline</span>
@@ -191,7 +191,7 @@
     </main>
 
     <!-- Bottom Cooperative Multi-Agent WebSocket Command & NDJSON Log -->
-    <footer class="h-36 border-t border-gray-800/80 bg-[#050715] flex z-20">
+    <footer style="background-color: #050715;" class="h-36 border-t border-gray-800/80 flex z-20">
         <!-- Live Agent Event Stream Log (Left 70%) -->
         <div class="flex-1 flex flex-col border-r border-gray-800/80">
             <div class="h-6 bg-gray-900/40 border-b border-gray-800/50 flex items-center justify-between px-4">
@@ -204,7 +204,7 @@
         </div>
 
         <!-- System Status Parameters (Right 30%) -->
-        <div class="w-[320px] flex flex-col bg-gray-900/20">
+        <div style="width: 320px; flex-shrink: 0;" class="flex flex-col bg-gray-900/20">
             <div class="h-6 bg-gray-900/40 border-b border-gray-800/50 flex items-center px-4">
                 <span class="text-[9px] font-bold tracking-widest text-gray-400 uppercase">diagnostics telemetry</span>
             </div>
@@ -230,9 +230,9 @@
     </footer>
 
     <!-- Core Javascript Codebases -->
-    <script src="/static/js/app.js?v=1.0.2"></script>
-    <script src="/static/js/designer.js?v=1.0.2"></script>
-    <script src="/static/js/simulator_view.js?v=1.0.2"></script>
-    <script src="/static/js/agent_bridge.js?v=1.0.2"></script>
+    <script src="/static/js/app.js?v=1.0.5"></script>
+    <script src="/static/js/designer.js?v=1.0.5"></script>
+    <script src="/static/js/simulator_view.js?v=1.0.5"></script>
+    <script src="/static/js/agent_bridge.js?v=1.0.5"></script>
 </body>
 </html>
