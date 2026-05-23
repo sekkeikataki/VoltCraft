@@ -42,7 +42,7 @@ class ContinuousSolver:
         # Find voltage-defining components
         voltage_components = []
         for node in self.nodes:
-            if node["type"] in ("voltage_source", "opamp"):
+            if node["type"] in ("voltage_source", "opamp", "digital_interface_out"):
                 voltage_components.append(node)
                 
         return nets_list, net_map, voltage_components
@@ -289,6 +289,23 @@ class ContinuousSolver:
                     
                 A[br_idx, br_idx] -= Rout
                 z[br_idx] = 0.0
+                
+            elif n_type == "digital_interface_out":
+                v_val = float(params.get("V", 0.0))
+                na = pins.get("analog_out", "n0")
+                nb = "n0"
+                
+                ia = net_map.get(na)
+                ib = net_map.get(nb)
+                br_idx = volt_map[n_id]
+                
+                if ia is not None:
+                    A[ia, br_idx] += 1.0
+                    A[br_idx, ia] += 1.0
+                if ib is not None:
+                    A[ib, br_idx] -= 1.0
+                    A[br_idx, ib] -= 1.0
+                z[br_idx] = v_val
 
         # Construct comprehensive index mapping log
         complete_map = {}
@@ -320,7 +337,7 @@ class ContinuousSolver:
             scaled_nodes = []
             for node in self.nodes:
                 node_copy = node.copy()
-                if node["type"] == "voltage_source" and "V" in node["params"]:
+                if node["type"] in ("voltage_source", "digital_interface_out") and "V" in node["params"]:
                     params_copy = node["params"].copy()
                     params_copy["V"] = float(node["params"]["V"]) * scale
                     node_copy["params"] = params_copy

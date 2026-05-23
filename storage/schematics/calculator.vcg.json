@@ -1,0 +1,175 @@
+{
+  "schema_version": "1.0.0",
+  "metadata": {
+    "name": "Unified Mechatronic Calculator Adder Subtractor",
+    "created_utc": "2026-05-23T20:58:00Z",
+    "author_agent": "VoltCraft-Orchestrator"
+  },
+  "nodes": [
+    {
+      "id": "V_bat",
+      "type": "voltage_source",
+      "params": {"V": 5.0},
+      "pos": {"x": 40.0, "y": 40.0},
+      "rot": 90,
+      "pins": {"a": "v_cc", "b": "n0"}
+    },
+    {
+      "id": "V_A",
+      "type": "voltage_source",
+      "params": {"V": 5.0, "freq": 1000.0, "phase": 0.0},
+      "pos": {"x": 40.0, "y": 140.0},
+      "rot": 90,
+      "pins": {"a": "in_A", "b": "n0"}
+    },
+    {
+      "id": "V_B",
+      "type": "voltage_source",
+      "params": {"V": 5.0, "freq": 500.0, "phase": 1.57},
+      "pos": {"x": 40.0, "y": 240.0},
+      "rot": 90,
+      "pins": {"a": "in_B", "b": "n0"}
+    },
+    {
+      "id": "V_Sub",
+      "type": "voltage_source",
+      "params": {"V": 5.0, "freq": 250.0, "phase": 0.0},
+      "pos": {"x": 40.0, "y": 340.0},
+      "rot": 90,
+      "pins": {"a": "ctrl_Sub", "b": "n0"}
+    },
+    {
+      "id": "COMP_A",
+      "type": "analog_comparator",
+      "params": {"threshold": 2.5},
+      "pos": {"x": 160.0, "y": 140.0},
+      "rot": 0,
+      "pins": {"analog_in": "in_A", "digital_out": "d_A"}
+    },
+    {
+      "id": "COMP_B",
+      "type": "analog_comparator",
+      "params": {"threshold": 2.5},
+      "pos": {"x": 160.0, "y": 240.0},
+      "rot": 0,
+      "pins": {"analog_in": "in_B", "digital_out": "d_B"}
+    },
+    {
+      "id": "COMP_Sub",
+      "type": "analog_comparator",
+      "params": {"threshold": 2.5},
+      "pos": {"x": 160.0, "y": 340.0},
+      "rot": 0,
+      "pins": {"analog_in": "ctrl_Sub", "digital_out": "d_Sub"}
+    },
+    {
+      "id": "XOR_B",
+      "type": "digital_xor",
+      "params": {"delay": 1e-6},
+      "pos": {"x": 280.0, "y": 240.0},
+      "rot": 0,
+      "pins": {"a": "d_B", "b": "d_Sub", "out": "d_B_xor"}
+    },
+    {
+      "id": "XOR_Sum1",
+      "type": "digital_xor",
+      "params": {"delay": 1e-6},
+      "pos": {"x": 400.0, "y": 140.0},
+      "rot": 0,
+      "pins": {"a": "d_A", "b": "d_B_xor", "out": "d_sum_mid"}
+    },
+    {
+      "id": "XOR_Sum2",
+      "type": "digital_xor",
+      "params": {"delay": 1e-6},
+      "pos": {"x": 520.0, "y": 140.0},
+      "rot": 0,
+      "pins": {"a": "d_sum_mid", "b": "d_Sub", "out": "d_Sum"}
+    },
+    {
+      "id": "AND_Carry1",
+      "type": "digital_and",
+      "params": {"delay": 1e-6},
+      "pos": {"x": 400.0, "y": 260.0},
+      "rot": 0,
+      "pins": {"a": "d_A", "b": "d_B_xor", "out": "d_c1"}
+    },
+    {
+      "id": "AND_Carry2",
+      "type": "digital_and",
+      "params": {"delay": 1e-6},
+      "pos": {"x": 520.0, "y": 260.0},
+      "rot": 0,
+      "pins": {"a": "d_sum_mid", "b": "d_Sub", "out": "d_c2"}
+    },
+    {
+      "id": "OR_Carry",
+      "type": "digital_or",
+      "params": {"delay": 1e-6},
+      "pos": {"x": 640.0, "y": 260.0},
+      "rot": 0,
+      "pins": {"a": "d_c1", "b": "d_c2", "out": "d_Cout"}
+    },
+    {
+      "id": "INT_Sum",
+      "type": "digital_interface_out",
+      "params": {"V": 5.0, "delay": 0.0},
+      "pos": {"x": 760.0, "y": 140.0},
+      "rot": 0,
+      "pins": {"digital_in": "d_Sum", "analog_out": "v_Sum"}
+    },
+    {
+      "id": "INT_Cout",
+      "type": "digital_interface_out",
+      "params": {"V": 5.0, "delay": 0.0},
+      "pos": {"x": 760.0, "y": 260.0},
+      "rot": 0,
+      "pins": {"digital_in": "d_Cout", "analog_out": "v_Cout"}
+    }
+  ],
+  "edges": [
+    {
+      "id": "w1",
+      "net": "in_A",
+      "path": [[40.0, 140.0], [160.0, 140.0]]
+    },
+    {
+      "id": "w2",
+      "net": "in_B",
+      "path": [[40.0, 240.0], [160.0, 240.0]]
+    },
+    {
+      "id": "w3",
+      "net": "ctrl_Sub",
+      "path": [[40.0, 340.0], [160.0, 340.0]]
+    },
+    {
+      "id": "w4",
+      "net": "v_Sum",
+      "path": [[760.0, 140.0], [860.0, 140.0]]
+    },
+    {
+      "id": "w5",
+      "net": "v_Cout",
+      "path": [[760.0, 260.0], [860.0, 260.0]]
+    }
+  ],
+  "nets": [
+    "n0",
+    "v_cc",
+    "in_A",
+    "in_B",
+    "ctrl_Sub",
+    "d_A",
+    "d_B",
+    "d_Sub",
+    "d_B_xor",
+    "d_sum_mid",
+    "d_Sum",
+    "d_c1",
+    "d_c2",
+    "d_Cout",
+    "v_Sum",
+    "v_Cout"
+  ]
+}

@@ -90,3 +90,57 @@ def test_rlc_inductor_charging():
     v_expected = 5.0 * math.exp(-1.0)
     
     assert np.isclose(v_10ms, v_expected, atol=0.1)
+
+def test_digital_interface_out_transient():
+    from voltcraft.engine.solver import DiscreteEventScheduler, MixedSignalCoSimulator
+    # Set up a circuit with 1 voltage source, 1 analog comparator, 1 digital inverter, and 1 digital_interface_out
+    # Analog input is a 5V sinusoidal source at 250Hz. Analog comparator threshold is 2.5V.
+    # The comparator output d_comp goes to digital inverter output d_inv.
+    # d_inv drives digital_interface_out to v_out.
+    # Therefore, when analog source V1 crosses 2.5V rising (at t=0.5ms), d_comp is scheduled to 1,
+    # d_inv becomes 0, and v_out goes to 0V.
+    
+    nodes = [
+        {
+            "id": "V1",
+            "type": "voltage_source",
+            "params": {"V": 5.0, "freq": 250.0, "phase": 0.0}, # 250Hz sine wave
+            "pins": {"a": "in_an", "b": "n0"}
+        },
+        {
+            "id": "COMP1",
+            "type": "analog_comparator",
+            "params": {"threshold": 2.5},
+            "pins": {"analog_in": "in_an", "digital_out": "d_comp"}
+        },
+        {
+            "id": "INV1",
+            "type": "digital_not",
+            "params": {"delay": 1e-6},
+            "pins": {"in": "d_comp", "out": "d_inv"}
+        },
+        {
+            "id": "INT1",
+            "type": "digital_interface_out",
+            "params": {"V": 5.0, "delay": 0.0},
+            "pins": {"digital_in": "d_inv", "analog_out": "v_out"}
+        }
+    ]
+    edges = []
+    
+    analog = ContinuousSolver(nodes, edges)
+    digital = DiscreteEventScheduler()
+    # Initialize the queue
+    digital.schedule_event(0.0, "d_comp", "0")
+    
+    cosim = MixedSignalCoSimulator(analog, digital)
+    res = cosim.step_co_simulation(0.0, 0.001, 1e-4)
+    
+    a_waves = res["analog_waveforms"]
+    a_map = res["analog_map"]
+    
+    # At late simulation time (t=1ms), v_out should be 0.0V since d_comp = 1 -> d_inv = 0 -> v_out = 0V
+    v_out_final = a_waves[a_map["v_out"]][-1]
+    assert np.isclose(v_out_final, 0.0, atol=1e-3)
+
+
