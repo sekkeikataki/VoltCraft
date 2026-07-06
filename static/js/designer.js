@@ -31,7 +31,8 @@ class VoltCraftDesigner {
             nmos: "M 0 20 L 45 20 M 45 10 L 45 30 M 52 8 L 52 32 M 52 12 L 70 12 L 70 5 L 100 5 M 52 28 L 70 28 L 70 35 L 100 35 M 58 28 L 52 25 L 58 22",
             pmos: "M 0 20 L 40 20 M 43 20 A 3 3 0 1 1 49 20 A 3 3 0 1 1 43 20 M 52 10 L 52 30 M 58 8 L 58 32 M 58 12 L 72 12 L 72 5 L 100 5 M 58 28 L 72 28 L 72 35 L 100 35",
             bjt_npn: "M 0 20 L 45 20 M 45 8 L 45 32 M 45 15 L 70 6 L 70 5 L 100 5 M 45 25 L 70 34 L 70 35 L 100 35 M 62 33 L 70 34 L 64 27",
-            bjt_pnp: "M 0 20 L 45 20 M 45 8 L 45 32 M 45 15 L 70 6 L 70 5 L 100 5 M 45 25 L 70 34 L 70 35 L 100 35 M 53 25 L 45 25 L 51 31"
+            bjt_pnp: "M 0 20 L 45 20 M 45 8 L 45 32 M 45 15 L 70 6 L 70 5 L 100 5 M 45 25 L 70 34 L 70 35 L 100 35 M 53 25 L 45 25 L 51 31",
+            subcircuit: "M 0 20 L 25 20 M 75 20 L 100 20 M 25 5 L 75 5 L 75 35 L 25 35 Z M 33 13 L 42 22 M 42 13 L 33 22 M 55 25 L 67 25 M 55 29 L 67 29"
         };
 
         // Suggested editable parameters per component type for the inspector

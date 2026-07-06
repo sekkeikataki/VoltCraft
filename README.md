@@ -65,6 +65,12 @@ Sources carrying an `ac_mag` parameter (with optional `ac_phase` in degrees) dri
 ### Stimulus Waveforms
 Voltage sources accept a `wave` parameter — `sine` (default), `square`, `triangle`, or `sawtooth` — plus `freq`, `phase` (radians), `offset`, and `duty` (square only). Periodic waves swing $\pm V$ around the offset; a source without a positive `freq` is a DC level.
 
+### Adaptive Timestep Control (LTE)
+Transient runs accept `adaptive: true` (or the **LTE** toggle in the UI): each candidate step is solved once at $h$ and again as two $h/2$ substeps, and the difference estimates the local truncation error scaled by $2^p - 1$ for an order-$p$ integrator. Steps exceeding `lte_tol` are rejected and halved; comfortably accurate steps double (bounded by `dt_min`/`dt_max`). On an RC charging benchmark the controller matches a fixed grid's worst-case accuracy with **44 steps instead of 40,000** (226x fewer Newton solves), and it automatically refines around square-wave edges.
+
+### Hierarchical Subcircuits
+A subcircuit definition is an ordinary VCG graph plus a top-level `"ports"` list naming the nets it exposes. Instances are nodes of type `subcircuit` (ID prefix `X`) whose `params.ref` names the definition file and whose pins map ports onto parent nets. Before solving, instances are flattened inline: internal components and nets are namespaced `X1.R1` / `X1.mid` (addressable in result maps and the operating-point report), ports splice onto the parent nets, and `n0` remains global ground. Definitions nest arbitrarily; cycles are rejected with a depth guard, and definition files are validated and confined to the workspace tree.
+
 ### DC Parameter Sweeps
 Any component parameter can be swept linearly (`mode="dc_sweep"`, or the *DC Param Sweep* mode in the UI): the solver computes the full DC operating point per value and returns the transfer curves — e.g. voltage-divider ramps or MOSFET $I_D$–$V_{GS}$ characteristics. The swept parameter is restored after the run.
 

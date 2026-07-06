@@ -108,6 +108,10 @@ class VoltCraftApp {
                 method: "trapezoidal",
                 uic: true
             };
+            if (mode === "transient") {
+                const adaptiveEl = document.getElementById("sim-adaptive");
+                params.adaptive = !!(adaptiveEl && adaptiveEl.checked);
+            }
         }
 
         // For mixed mode co-sim, add initial step events
@@ -380,6 +384,8 @@ class VoltCraftApp {
                 stepsEl.textContent = `${stats.points} freq pts`;
             } else if (stats.analysis === "dc_sweep") {
                 stepsEl.textContent = `${stats.points} sweep pts${stats.converged ? "" : " (DIVERGED)"}`;
+            } else if (stats.analysis === "transient_adaptive") {
+                stepsEl.textContent = `${stats.timesteps} adaptive (+${stats.rejected_steps} rej)`;
             }
             return;
         }

@@ -743,6 +743,114 @@ class ContinuousSolver:
 
         return results, time_points, cmap
 
+    def solve_transient_adaptive(self, t_start: float, t_stop: float, dt_init: float = None,
+                                 dt_min: float = None, dt_max: float = None, lte_tol: float = 1e-4,
+                                 method: str = "trapezoidal", uic: bool = False,
+                                 max_steps: int = 200000) -> Tuple[np.ndarray, List[float], Dict[str, int]]:
+        """
+        Transient simulation with adaptive timestep control.
+
+        The local truncation error of each candidate step is estimated by
+        step-doubling: the step is solved once at h and again as two h/2
+        substeps; for an integrator of order p the difference scales the
+        true error by (2^p - 1). Steps exceeding lte_tol are rejected and
+        halved (down to dt_min); comfortably accurate steps grow the next
+        step (up to dt_max). The two-substep solution, which is the more
+        accurate one, is the accepted result.
+
+        Returns (results, time_points, cmap) like solve_transient; the time
+        grid is non-uniform.
+        """
+        if t_stop <= t_start:
+            raise ValueError(f"t_stop ({t_stop}) must be greater than t_start ({t_start})")
+        if lte_tol <= 0.0:
+            raise ValueError(f"lte_tol must be positive, got {lte_tol}")
+
+        span = t_stop - t_start
+        if dt_init is None:
+            dt_init = span / 100.0
+        if dt_max is None:
+            dt_max = span / 10.0
+        if dt_min is None:
+            dt_min = span * 1e-9
+        if dt_init <= 0.0 or dt_min <= 0.0 or dt_max < dt_min:
+            raise ValueError("Adaptive timestep bounds must satisfy 0 < dt_min <= dt_max and dt_init > 0")
+
+        order = 2.0 if method == "trapezoidal" else 1.0
+        err_scale = (2.0 ** order) - 1.0
+
+        nets_list, net_map, volt_comps = self._get_nets_and_mappings()
+        size = len(net_map) + len(volt_comps)
+
+        x, cmap = self.solve_dc()
+        if uic:
+            x = np.zeros(size)
+
+        history = {"integration_method": method}
+        self.init_energy_storage_history(x, history)
+
+        xs = [x.copy()]
+        ts = [t_start]
+        t = t_start
+        h = min(dt_init, dt_max)
+
+        accepted = 0
+        rejected = 0
+        total_nr = 0
+        h_min_used = float("inf")
+        h_max_used = 0.0
+
+        while t < t_stop - 1e-15:
+            if accepted + rejected >= max_steps:
+                raise ValueError(f"Adaptive transient exceeded {max_steps} steps; loosen lte_tol or raise dt_min")
+
+            h = min(h, t_stop - t)
+
+            # Candidate 1: single full step from the current state
+            x_full, it_full, _ = self.newton_transient_step(t + h, h, history, x)
+
+            # Candidate 2: two half steps on a checkpointed history copy
+            hist_half = dict(history)
+            x_h1, it_h1, _ = self.newton_transient_step(t + h / 2.0, h / 2.0, hist_half, x)
+            self.update_energy_storage_history(x_h1, h / 2.0, hist_half, method=method)
+            x_h2, it_h2, _ = self.newton_transient_step(t + h, h / 2.0, hist_half, x_h1)
+            total_nr += it_full + it_h1 + it_h2
+
+            err = float(np.linalg.norm(x_h2 - x_full)) / err_scale
+
+            if err <= lte_tol or h <= dt_min * (1.0 + 1e-9):
+                # Accept the two-substep result and its companion history
+                self.update_energy_storage_history(x_h2, h / 2.0, hist_half, method=method)
+                history = hist_half
+                t += h
+                x = x_h2
+                xs.append(x.copy())
+                ts.append(t)
+                accepted += 1
+                h_min_used = min(h_min_used, h)
+                h_max_used = max(h_max_used, h)
+                if err < 0.25 * lte_tol:
+                    h = min(h * 2.0, dt_max)
+            else:
+                rejected += 1
+                h = max(h / 2.0, dt_min)
+
+        results = np.column_stack(xs)
+
+        self.last_solve_stats = {
+            "analysis": "transient_adaptive",
+            "matrix_size": size,
+            "method": method,
+            "timesteps": accepted,
+            "rejected_steps": rejected,
+            "newton_iterations": total_nr,
+            "lte_tol": lte_tol,
+            "dt_min_used": h_min_used,
+            "dt_max_used": h_max_used
+        }
+
+        return results, ts, cmap
+
     def solve_dc_sweep(self, component_id: str, param_name: str, start: float, stop: float,
                        points: int = 25) -> Tuple[List[float], np.ndarray, Dict[str, int]]:
         """

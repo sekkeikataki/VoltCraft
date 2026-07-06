@@ -15,6 +15,7 @@ from voltcraft.engine.solver import ContinuousSolver, DiscreteEventScheduler, Mi
 from voltcraft.engine.parser_native import NativeGraphValidator
 from voltcraft.engine.parser_drawio import DrawioCodec
 from voltcraft.engine.scraper import DatasheetScraper
+from voltcraft.engine.subcircuit import flatten_subcircuits
 
 app = FastAPI(title="VoltCraft-Workstation-Server", version="1.0.0")
 
@@ -208,6 +209,18 @@ def get_loaded_graph(path: str) -> Dict[str, Any]:
         raise ValueError("Schematic not loaded. Call load_schematic first.")
     return graph
 
+def load_subcircuit_definition(ref: str) -> Dict[str, Any]:
+    """Loads and validates a subcircuit definition from the workspace tree."""
+    full_path = resolve_workspace_path(ref)
+    if not os.path.exists(full_path):
+        raise ValueError(f"Subcircuit definition not found: {ref}")
+    with open(full_path, "r", encoding="utf-8") as f:
+        sub = json.load(f)
+    is_valid, msg = NativeGraphValidator.validate(sub)
+    if not is_valid:
+        raise ValueError(f"Subcircuit definition '{ref}' is invalid: {msg}")
+    return sub
+
 async def send_to_active_connections(packet: Dict[str, Any]) -> None:
     """Sends a JSON packet to every active WebSocket, dropping dead sockets."""
     for ws in list(active_connections):
@@ -318,7 +331,8 @@ ID_PREFIXES = {
     "nmos": "M",
     "pmos": "M",
     "bjt_npn": "Q",
-    "bjt_pnp": "Q"
+    "bjt_pnp": "Q",
+    "subcircuit": "X"
 }
 
 TWO_TERMINAL_TYPES = ("resistor", "capacitor", "inductor", "voltage_source", "current_source")
@@ -498,8 +512,14 @@ async def action_run_simulation(agent_id: str, params: Dict[str, Any]) -> Dict[s
 
     graph = get_loaded_graph(path)
 
+    # Expand subcircuit instances into a flat netlist for the solvers
+    if any(n["type"] == "subcircuit" for n in graph["nodes"]):
+        sim_graph = flatten_subcircuits(graph, load_subcircuit_definition)
+    else:
+        sim_graph = graph
+
     # Instantiate continuous solver
-    analog = ContinuousSolver(graph["nodes"], graph["edges"])
+    analog = ContinuousSolver(sim_graph["nodes"], sim_graph["edges"])
 
     if mode == "dc":
         x, cmap = analog.solve_dc()
@@ -515,7 +535,12 @@ async def action_run_simulation(agent_id: str, params: Dict[str, Any]) -> Dict[s
         method = sim_params.get("method", "backward_euler")
         uic = bool(sim_params.get("uic", False))
 
-        results_mat, times, cmap = analog.solve_transient(0.0, t_stop, dt, method=method, uic=uic)
+        if bool(sim_params.get("adaptive", False)):
+            lte_tol = float(sim_params.get("lte_tol", 1e-4))
+            results_mat, times, cmap = analog.solve_transient_adaptive(
+                0.0, t_stop, dt_init=dt, lte_tol=lte_tol, method=method, uic=uic)
+        else:
+            results_mat, times, cmap = analog.solve_transient(0.0, t_stop, dt, method=method, uic=uic)
         results = {
             "waveforms": results_mat.tolist(),
             "times": times,
@@ -560,7 +585,7 @@ async def action_run_simulation(agent_id: str, params: Dict[str, Any]) -> Dict[s
         for ev in initial_events:
             scheduler.schedule_event(ev["time"], ev["net"], ev["val"])
 
-        logs = scheduler.run_until(t_stop, graph["nodes"])
+        logs = scheduler.run_until(t_stop, sim_graph["nodes"])
         results = {"logs": logs}
     elif mode == "mixed":
         t_stop = float(sim_params.get("t_stop", 0.001))

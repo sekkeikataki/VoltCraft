@@ -36,6 +36,16 @@ class NativeGraphValidator:
 
         known_nets = set(graph["nets"])
 
+        # Optional subcircuit port declarations
+        if "ports" in graph:
+            if not isinstance(graph["ports"], list):
+                return False, "ports must be a list of net names"
+            for port in graph["ports"]:
+                if not isinstance(port, str):
+                    return False, f"Port name must be a string: {port}"
+                if port not in known_nets:
+                    return False, f"Port '{port}' must reference a declared net"
+
         # Validate nodes
         if not isinstance(graph["nodes"], list):
             return False, "nodes must be a list"
