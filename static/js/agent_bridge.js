@@ -12,24 +12,17 @@ class VoltCraftAgentBridge {
 
     initBridge() {
         console.log("[VOLTCRAFT] Agent socket bridge adapter loaded.");
-        
-        // Listen to WebSocket events in main app loop
-        window.addEventListener("load", () => {
-            if (appStore.websocket) {
-                // Hook into message handler
-                const prevHandler = appStore.websocket.onmessage;
-                appStore.websocket.onmessage = (event) => {
-                    if (prevHandler) prevHandler(event);
-                    
-                    const packet = JSON.parse(event.data);
-                    if (packet.type === "agent_action_triggered") {
-                        this.handleAgentTrigger(packet);
-                    } else if (packet.type === "schematic_mutated") {
-                        this.clearLocks();
-                    }
-                };
-            }
-        });
+    }
+
+    // Called by the app store for every WebSocket packet. The app delegates
+    // instead of this bridge patching websocket.onmessage, which would be
+    // lost each time the app rebuilds the socket on reconnect.
+    onPacket(packet) {
+        if (packet.type === "agent_action_triggered") {
+            this.handleAgentTrigger(packet);
+        } else if (packet.type === "schematic_mutated") {
+            this.clearLocks();
+        }
     }
 
     handleAgentTrigger(packet) {

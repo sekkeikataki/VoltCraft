@@ -1,14 +1,15 @@
 import os
+import re
 import json
 import time
 import hashlib
 import traceback
 from datetime import datetime, timezone
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
-from typing import Dict, Any, List, Set
+from typing import Dict, Any, Set
 
 from voltcraft.engine.solver import ContinuousSolver, DiscreteEventScheduler, MixedSignalCoSimulator
 from voltcraft.engine.parser_native import NativeGraphValidator
@@ -22,6 +23,7 @@ app.mount("/static", StaticFiles(directory="voltcraft/static"), name="static")
 
 # Setup base folders
 ROOT_DIR = "voltcraft"
+WORKSPACE_ROOT = os.path.realpath(ROOT_DIR)
 STORAGE_DIR = os.path.join(ROOT_DIR, "storage")
 SCHEMATICS_DIR = os.path.join(STORAGE_DIR, "schematics")
 WIKI_DIR = os.path.join(STORAGE_DIR, "wiki")
@@ -147,6 +149,32 @@ def write_journal_entry(agent_id: str, action: str, data: Dict[str, Any], curren
         
     return graph_hash
 
+def resolve_workspace_path(path: str) -> str:
+    """
+    Resolves a user-supplied path and ensures it stays inside the VoltCraft
+    workspace tree. A plain prefix comparison would accept sibling directories
+    such as 'voltcraft_evil', so compare directory components instead.
+    """
+    full_path = os.path.realpath(path)
+    if os.path.commonpath([WORKSPACE_ROOT, full_path]) != WORKSPACE_ROOT:
+        raise ValueError("Unauthorized path out of VoltCraft workspace tree")
+    return full_path
+
+def allocate_indexed_name(prefix: str, taken: Set[str], start: int = 1) -> str:
+    """Returns the first '<prefix><idx>' name not present in taken."""
+    idx = start
+    while f"{prefix}{idx}" in taken:
+        idx += 1
+    return f"{prefix}{idx}"
+
+async def send_to_active_connections(packet: Dict[str, Any]) -> None:
+    """Sends a JSON packet to every active WebSocket, dropping dead sockets."""
+    for ws in list(active_connections):
+        try:
+            await ws.send_json(packet)
+        except Exception:
+            active_connections.discard(ws)
+
 class AgentAction(BaseModel):
     action: str
     agent_id: str = "Designer"
@@ -159,29 +187,22 @@ async def execute_agent_action(payload: AgentAction):
     params = payload.params
     
     # Broadcast event payload across websocket to active clients
-    ws_event = {
+    await send_to_active_connections({
         "type": "agent_action_triggered",
         "agent_id": agent_id,
         "action": action,
         "timestamp": time.time()
-    }
-    for ws in list(active_connections):
-        try:
-            await ws.send_json(ws_event)
-        except Exception:
-            pass
+    })
 
     try:
         if action == "load_schematic":
             path = params.get("path")
             if not path:
                 raise ValueError("Missing parameter: path")
-            
+
             # Resolve target path
-            full_path = os.path.abspath(path)
-            if not full_path.startswith(os.path.abspath(ROOT_DIR)):
-                raise ValueError("Unauthorized path out of VoltCraft workspace tree")
-                
+            full_path = resolve_workspace_path(path)
+
             if not os.path.exists(full_path):
                 # Check reference circuits
                 alt_path = os.path.join(CIRCUITS_DIR, os.path.basename(path))
@@ -196,6 +217,7 @@ async def execute_agent_action(payload: AgentAction):
                         "edges": [],
                         "nets": ["n0"]
                     }
+                    os.makedirs(os.path.dirname(full_path), exist_ok=True)
                     with open(full_path, "w", encoding="utf-8") as f:
                         json.dump(blank, f, indent=2)
 
@@ -222,11 +244,9 @@ async def execute_agent_action(payload: AgentAction):
             graph = params.get("graph")
             if not path or not graph:
                 raise ValueError("Missing parameters: path, graph")
-                
-            full_path = os.path.abspath(path)
-            if not full_path.startswith(os.path.abspath(ROOT_DIR)):
-                raise ValueError("Unauthorized path out of VoltCraft workspace tree")
-                
+
+            full_path = resolve_workspace_path(path)
+
             is_valid, msg = NativeGraphValidator.validate(graph)
             if not is_valid:
                 raise ValueError(f"Invalid VCG schema: {msg}")
@@ -266,27 +286,18 @@ async def execute_agent_action(payload: AgentAction):
                 raise ValueError("Schematic not loaded. Call load_schematic first.")
                 
             # Generate unique component ID
-            if comp_type == "resistor":
-                prefix = "R"
-            elif comp_type == "capacitor":
-                prefix = "C"
-            elif comp_type == "inductor":
-                prefix = "L"
-            elif comp_type == "diode":
-                prefix = "D"
-            elif comp_type == "voltage_source":
-                prefix = "V"
-            elif comp_type == "current_source":
-                prefix = "I"
-            else:
-                prefix = "U"
+            id_prefixes = {
+                "resistor": "R",
+                "capacitor": "C",
+                "inductor": "L",
+                "diode": "D",
+                "voltage_source": "V",
+                "current_source": "I"
+            }
+            prefix = id_prefixes.get(comp_type, "U")
             existing_ids = {n["id"] for n in graph["nodes"]}
-            idx = 1
-            node_id = f"{prefix}{idx}"
-            while node_id in existing_ids:
-                idx += 1
-                node_id = f"{prefix}{idx}"
-                
+            node_id = allocate_indexed_name(prefix, existing_ids)
+
             # Default pins
             pins = {}
             if comp_type in ("resistor", "capacitor", "inductor", "voltage_source", "current_source"):
@@ -349,17 +360,18 @@ async def execute_agent_action(payload: AgentAction):
             elif net_to != "n0":
                 target_net = net_to
             else:
-                # Create a new net
-                net_idx = len(graph["nets"])
-                target_net = f"n{net_idx}"
+                # Create a new net; nets are not necessarily contiguous
+                # (e.g. after deletions), so probe for a free name
+                target_net = allocate_indexed_name("n", set(graph["nets"]), start=len(graph["nets"]))
                 graph["nets"].append(target_net)
-                
+
             # Assign net to both terminals
             nodes_dict[p_from["node_id"]]["pins"][p_from["pin"]] = target_net
             nodes_dict[p_to["node_id"]]["pins"][p_to["pin"]] = target_net
-            
-            # Append layout layout edge wire
-            edge_id = f"w{len(graph['edges']) + 1}"
+
+            # Append layout edge wire
+            existing_edge_ids = {e["id"] for e in graph["edges"]}
+            edge_id = allocate_indexed_name("w", existing_edge_ids, start=len(graph["edges"]) + 1)
             pos_from = nodes_dict[p_from["node_id"]]["pos"]
             pos_to = nodes_dict[p_to["node_id"]]["pos"]
             
@@ -393,10 +405,11 @@ async def execute_agent_action(payload: AgentAction):
                 
             if action == "delete_node":
                 graph["nodes"] = [n for n in graph["nodes"] if n["id"] != target_id]
-                # Cleanup connected edges
-                # Keep edges only if both ends remain connected or edge is independent
-                # Standard cleanup: remove any edge whose endpoints would become disconnected
-                pass
+                # Cleanup: drop wires and nets that no longer connect to any pin
+                live_nets = {net for n in graph["nodes"] for net in n.get("pins", {}).values()}
+                live_nets.add("n0")
+                graph["edges"] = [e for e in graph["edges"] if e["net"] in live_nets]
+                graph["nets"] = [net for net in graph["nets"] if net in live_nets]
             else:
                 graph["edges"] = [e for e in graph["edges"] if e["id"] != target_id]
                 
@@ -479,12 +492,14 @@ async def execute_agent_action(payload: AgentAction):
             term = params.get("term", "").lower().strip()
             if not term:
                 raise ValueError("Missing parameter: term")
-                
+            if not re.fullmatch(r"[a-z0-9_-]+", term):
+                raise ValueError(f"Invalid wiki term: {term!r}")
+
             wiki_path = os.path.join(WIKI_DIR, f"{term}.md")
             if not os.path.exists(wiki_path):
-                # Attempt to find similar
-                wiki_path = os.path.join(WIKI_DIR, "resistor.md")
-                
+                available = sorted(p[:-3] for p in os.listdir(WIKI_DIR) if p.endswith(".md"))
+                raise ValueError(f"No wiki entry for '{term}'. Available: {', '.join(available)}")
+
             with open(wiki_path, "r", encoding="utf-8") as f:
                 content = f.read()
                 
@@ -581,17 +596,12 @@ async def execute_agent_action(payload: AgentAction):
 
 async def broadcast_update(path: str, graph: Dict[str, Any]):
     """Broadcasts a live update of the graph schema to all active sockets."""
-    update_packet = {
+    await send_to_active_connections({
         "type": "schematic_mutated",
         "path": path,
         "graph": graph,
         "timestamp": time.time()
-    }
-    for ws in list(active_connections):
-        try:
-            await ws.send_json(update_packet)
-        except Exception:
-            pass
+    })
 
 @app.websocket("/ws/agent")
 async def websocket_agent_channel(websocket: WebSocket):
@@ -602,14 +612,14 @@ async def websocket_agent_channel(websocket: WebSocket):
             # Handle incoming client messages if any
             data = await websocket.receive_text()
             packet = json.loads(data)
-            
+
             # Simple collaborative merge resolution
             if packet.get("type") == "schematic_edit":
                 path = packet["path"]
                 action = packet["action"]
                 agent_id = packet.get("agent_id", "Designer")
                 mutations = packet["mutations"]
-                
+
                 graph = active_schematics.get(path)
                 if graph:
                     # Apply concurrent edits (last-writer-wins)
@@ -619,14 +629,16 @@ async def websocket_agent_channel(websocket: WebSocket):
                             nid = edit["id"]
                             if nid in nodes_dict:
                                 nodes_dict[nid]["pos"] = edit["pos"]
-                                
-                    j_id = write_journal_entry(agent_id, f"ws_{action}", mutations, graph)
+
+                    write_journal_entry(agent_id, f"ws_{action}", mutations, graph)
                     # Broadcast merge results
                     await broadcast_update(path, graph)
     except WebSocketDisconnect:
-        active_connections.remove(websocket)
+        pass
     except Exception:
-        active_connections.remove(websocket)
+        traceback.print_exc()
+    finally:
+        active_connections.discard(websocket)
 
 # HTML dashboard fallback
 @app.get("/")

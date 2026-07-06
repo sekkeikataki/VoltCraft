@@ -151,7 +151,7 @@ class VoltCraftApp {
 
         this.websocket.onmessage = (event) => {
             const packet = JSON.parse(event.data);
-            
+
             if (packet.type === "schematic_mutated") {
                 if (packet.path === this.activeSchematicPath) {
                     this.graph = packet.graph;
@@ -159,6 +159,13 @@ class VoltCraftApp {
                 }
             } else if (packet.type === "agent_action_triggered") {
                 this.logJournalWS(packet.agent_id, packet.action, packet.timestamp);
+            }
+
+            // Forward to the agent bridge overlay adapter. Delegating here
+            // (instead of the bridge patching onmessage) keeps the bridge
+            // attached across WebSocket reconnects.
+            if (this.agentBridge) {
+                this.agentBridge.onPacket(packet);
             }
         };
 

@@ -13,12 +13,18 @@ class ContinuousSolver:
         self.nodes = nodes
         self.edges = edges
         self.g_min = 1e-12  # Minimum shunt conductance to prevent singular matrices
-        
+        self._mappings_cache = None
+
     def _get_nets_and_mappings(self) -> Tuple[List[str], Dict[str, int], List[Dict[str, Any]]]:
         """
         Gathers all unique nets in the circuit and assigns matrix indices.
         Excludes 'n0' (ground) from the KCL index mapping.
+        The result is cached: the circuit topology (pins/nets) must not change
+        during the lifetime of a solver instance (parameter values may).
         """
+        if self._mappings_cache is not None:
+            return self._mappings_cache
+
         nets_set = set()
         for node in self.nodes:
             for pin, net in node.get("pins", {}).items():
@@ -44,8 +50,9 @@ class ContinuousSolver:
         for node in self.nodes:
             if node["type"] in ("voltage_source", "opamp", "digital_interface_out"):
                 voltage_components.append(node)
-                
-        return nets_list, net_map, voltage_components
+
+        self._mappings_cache = (nets_list, net_map, voltage_components)
+        return self._mappings_cache
 
     def limit_diode_voltage(self, v_old: float, v_new: float, vt: float, n: float, Is: float) -> float:
         """
@@ -351,16 +358,17 @@ class ContinuousSolver:
             
             # Newton Raphson Iterations
             for nr_iter in range(max_iter):
-                A, z, cmap = solver_step.assemble_mna(0.0, 1.0, history, prev_x=x)
-                
-                # Check condition number to diagnose stability
-                cond = np.linalg.cond(A)
-                if cond > 1e15:
-                    # Inject Gmin boost dynamically to restore condition
+                A, z, _ = solver_step.assemble_mna(0.0, 1.0, history, prev_x=x)
+
+                try:
+                    next_x = np.linalg.solve(A, z)
+                    if not np.all(np.isfinite(next_x)):
+                        raise np.linalg.LinAlgError("non-finite MNA solution")
+                except np.linalg.LinAlgError:
+                    # Inject Gmin boost dynamically to restore conditioning
                     for idx in range(len(net_map)):
                         A[idx, idx] += 1e-9
-                        
-                next_x = np.linalg.solve(A, z)
+                    next_x = np.linalg.solve(A, z)
                 
                 # Apply diode damping to prevent explosive exponential overflow
                 for node in self.nodes:
@@ -395,8 +403,12 @@ class ContinuousSolver:
             else:
                 # If convergence fails, return last best guess
                 pass
-                
-        _, cmap, _ = self._get_nets_and_mappings()
+
+        # Return the complete index map (nets plus voltage branch currents)
+        # so every entry of x is addressable, matching assemble_mna's map
+        cmap = dict(net_map)
+        for i, comp in enumerate(volt_comps):
+            cmap[f"branch_{comp['id']}"] = len(net_map) + i
         return x, cmap
 
     def solve_transient(self, t_start: float, t_stop: float, dt: float, method: str = "backward_euler", uic: bool = False) -> Tuple[np.ndarray, List[float], Dict[str, int]]:

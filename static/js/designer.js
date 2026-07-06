@@ -107,7 +107,7 @@ class VoltCraftDesigner {
     }
 
     zoom(delta) {
-        this.scale = Math.max(0.5, min(2.5, this.scale + delta));
+        this.scale = Math.max(0.5, Math.min(2.5, this.scale + delta));
         this.render(appStore.graph);
     }
 
@@ -328,8 +328,3 @@ class VoltCraftDesigner {
 window.addEventListener("DOMContentLoaded", () => {
     appStore.designer = new VoltCraftDesigner("cad-canvas");
 });
-
-// Helper for min logic
-function min(a, b) {
-    return a < b ? a : b;
-}

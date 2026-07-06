@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import hashlib
 import json
@@ -5,7 +6,7 @@ import os
 import time
 import urllib.parse
 from bs4 import BeautifulSoup
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 class DatasheetScraper:
     """
@@ -49,58 +50,63 @@ class DatasheetScraper:
         if domain in self.last_request_time:
             elapsed = now - self.last_request_time[domain]
             if elapsed < self.min_delay:
-                sleep_time = self.min_delay - elapsed
-                time.sleep(sleep_time)
-                
+                # asyncio.sleep, not time.sleep: this runs on the server's
+                # event loop and must not block other requests
+                await asyncio.sleep(self.min_delay - elapsed)
+
         self.last_request_time[domain] = time.time()
+
+    def _parse_robots_disallow_rules(self, content: str) -> List[str]:
+        """Extracts Disallow path prefixes that apply to our User-Agent."""
+        current_agent = "*"
+        rules: List[str] = []
+
+        for line in content.split("\n"):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" in line:
+                k, v = line.split(":", 1)
+                k = k.strip().lower()
+                v = v.strip()
+
+                if k == "user-agent":
+                    current_agent = v.lower()
+                elif k == "disallow" and current_agent in ("*", self.user_agent.lower()):
+                    if v:
+                        rules.append(v)
+
+        return rules
 
     async def _is_allowed_by_robots(self, url: str) -> bool:
         """
         Parses the domain's robots.txt to verify if our User-Agent is allowed.
+        The disallow rule list is cached per domain and evaluated against each
+        requested path (a cached yes/no verdict would only be valid for the
+        path it was first computed for).
         """
         parsed = urllib.parse.urlparse(url)
         robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-        
+
         cache_key = f"robots_{parsed.netloc}"
         cached_robots = self._get_from_cache(cache_key)
         if cached_robots is not None:
-            return cached_robots.get("allowed", True)
+            rules = cached_robots.get("disallow", [])
+            return not any(parsed.path.startswith(rule) for rule in rules)
 
         try:
             headers = {"User-Agent": self.user_agent}
             async with httpx.AsyncClient() as client:
                 res = await client.get(robots_url, headers=headers, timeout=5.0)
-                
+
             if res.status_code == 200:
-                content = res.text
-                lines = content.split("\n")
-                
-                # Simple robots.txt parser
-                current_agent = "*"
-                allowed = True
-                
-                for line in lines:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    if ":" in line:
-                        k, v = line.split(":", 1)
-                        k = k.strip().lower()
-                        v = v.strip()
-                        
-                        if k == "user-agent":
-                            current_agent = v.lower()
-                        elif k == "disallow" and (current_agent == "*" or current_agent == self.user_agent.lower()):
-                            # If disallowed path is a prefix of our request URL path
-                            if v and parsed.path.startswith(v):
-                                allowed = False
-                                
-                self._save_to_cache(cache_key, {"allowed": allowed})
-                return allowed
+                rules = self._parse_robots_disallow_rules(res.text)
+                self._save_to_cache(cache_key, {"disallow": rules})
+                return not any(parsed.path.startswith(rule) for rule in rules)
         except Exception:
             # Fallback to true if robots.txt doesn't exist or is unreachable
             return True
-            
+
         return True
 
     async def scrape_part_parameters(self, part_number: str) -> Dict[str, Any]:
