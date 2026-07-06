@@ -11,6 +11,8 @@ class VoltCraftDesigner {
         this.dragOffset = { x: 0, y: 0 };
         this.scale = 1.0;
         this.gridSize = 20;
+        this._gridLayer = null;
+        this._gridKey = null;
 
         // SVG symbol path descriptions
         this.symbols = {
@@ -133,6 +135,29 @@ class VoltCraftDesigner {
         return `M ${x1} ${y1} L ${midX} ${y1} L ${midX} ${y2} L ${x2} ${y2}`;
     }
 
+    appendGridLayer(w, h) {
+        // The dot lattice is ~1000 SVG nodes; rebuild it only when the
+        // scale or canvas size changes, not on every render (renders fire
+        // per mousemove while dragging components)
+        const key = `${this.scale}|${w}|${h}|${this.gridSize}`;
+        if (!this._gridLayer || this._gridKey !== key) {
+            const layer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+            for (let gx = 0; gx < w; gx += this.gridSize) {
+                for (let gy = 0; gy < h; gy += this.gridSize) {
+                    const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                    dot.setAttribute("cx", gx * this.scale);
+                    dot.setAttribute("cy", gy * this.scale);
+                    dot.setAttribute("r", "1");
+                    dot.setAttribute("fill", "rgba(255, 255, 255, 0.15)");
+                    layer.appendChild(dot);
+                }
+            }
+            this._gridLayer = layer;
+            this._gridKey = key;
+        }
+        this.svg.appendChild(this._gridLayer);
+    }
+
     render(graph) {
         this.activeGraph = graph;
         this.svg.innerHTML = "";
@@ -140,16 +165,7 @@ class VoltCraftDesigner {
         // 1. Draw snap grid dots
         const w = this.svg.clientWidth || 800;
         const h = this.svg.clientHeight || 500;
-        for (let gx = 0; gx < w; gx += this.gridSize) {
-            for (let gy = 0; gy < h; gy += this.gridSize) {
-                const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-                dot.setAttribute("cx", gx * this.scale);
-                dot.setAttribute("cy", gy * this.scale);
-                dot.setAttribute("r", "1");
-                dot.setAttribute("fill", "rgba(255, 255, 255, 0.15)");
-                this.svg.appendChild(dot);
-            }
-        }
+        this.appendGridLayer(w, h);
 
         // 2. Render Wires (Edges)
         graph.edges.forEach(edge => {

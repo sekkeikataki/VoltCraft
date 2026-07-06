@@ -17,6 +17,7 @@ REGR_FILES = [
     "test_regr_collision.vcg.json",
     "test_regr_collision.drawio.xml",
     "test_regr_delete.vcg.json",
+    "test_regr_merge.vcg.json",
 ]
 
 
@@ -186,6 +187,67 @@ def test_drawio_edge_pin_mapping_uses_style_symbol():
     shared_net = nodes["cell_r1"]["pins"]["b"]
     assert nodes["cell_u1"]["pins"]["inverting"] == shared_net
     assert shared_net != "n0"
+
+
+def test_wire_pins_merges_two_existing_nets():
+    # Wiring two pins that already belong to distinct nets makes them one
+    # electrical node: every pin and wire on the second net must be
+    # relabeled onto the first, and the second net must disappear
+    path = os.path.join(SCHEMATICS_DIR, "test_regr_merge.vcg.json")
+    assert post_action("load_schematic", {"path": path}).json()["status"] == "ok"
+
+    for _ in range(3):
+        assert post_action("place_component", {"path": path, "type": "resistor", "params": {}}).json()["status"] == "ok"
+
+    def wire(from_node, from_pin, to_node, to_pin):
+        res = post_action("wire_pins", {
+            "path": path,
+            "from": {"node_id": from_node, "pin": from_pin},
+            "to": {"node_id": to_node, "pin": to_pin}
+        }).json()
+        assert res["status"] == "ok"
+        return res["data"]["net"]
+
+    net_a = wire("R1", "a", "R2", "a")   # New net
+    net_b = wire("R2", "b", "R3", "a")   # Second, distinct net
+    assert net_a != net_b
+
+    merged = wire("R1", "a", "R2", "b")  # Joins the two nets
+    assert merged == net_a
+
+    live_graph = active_schematics[path]
+    pins = {n["id"]: n["pins"] for n in live_graph["nodes"]}
+    assert pins["R1"]["a"] == net_a
+    assert pins["R2"]["a"] == net_a
+    assert pins["R2"]["b"] == net_a
+    assert pins["R3"]["a"] == net_a  # Relabeled from the absorbed net
+
+    assert net_b not in live_graph["nets"]
+    assert all(e["net"] == net_a for e in live_graph["edges"])
+
+    is_valid, msg = NativeGraphValidator.validate(live_graph)
+    assert is_valid, msg
+
+
+def test_solver_rejects_nonpositive_component_values():
+    nodes = [
+        {"id": "V1", "type": "voltage_source", "params": {"V": 5.0}, "pins": {"a": "n1", "b": "n0"}},
+        {"id": "R1", "type": "resistor", "params": {"R": 0.0}, "pins": {"a": "n1", "b": "n0"}}
+    ]
+    with pytest.raises(ValueError, match="R1.*positive"):
+        ContinuousSolver(nodes, []).solve_dc()
+
+
+def test_solve_transient_rejects_invalid_time_grid():
+    nodes = [
+        {"id": "V1", "type": "voltage_source", "params": {"V": 5.0}, "pins": {"a": "n1", "b": "n0"}},
+        {"id": "R1", "type": "resistor", "params": {"R": 1000.0}, "pins": {"a": "n1", "b": "n0"}}
+    ]
+    solver = ContinuousSolver(nodes, [])
+    with pytest.raises(ValueError, match="dt"):
+        solver.solve_transient(0.0, 0.01, 0.0)
+    with pytest.raises(ValueError, match="t_stop"):
+        solver.solve_transient(0.01, 0.01, 1e-4)
 
 
 def test_robots_disallow_rules_parsed_per_agent():

@@ -120,7 +120,7 @@ sudo pacman -S --needed python python-fastapi uvicorn python-numpy python-httpx 
     ```bash
     /usr/bin/python -m py_compile $(find voltcraft -name '*.py')
     ```
-2.  Execute full 19-test regression suite:
+2.  Execute the full pytest regression suite (solver, parsers, API, and bug-regression tests):
     ```bash
     /usr/bin/python -m pytest voltcraft/tests -v
     ```
