@@ -61,9 +61,131 @@ class VoltCraftSimulatorView {
             this.plotDC(data);
         } else if (mode === "transient") {
             this.plotTransient(data);
+        } else if (mode === "ac") {
+            this.plotAC(data);
         } else if (mode === "mixed") {
             this.plotMixed(data);
         }
+    }
+
+    formatHz(f) {
+        if (f >= 1e9) return `${(f / 1e9).toFixed(0)}GHz`;
+        if (f >= 1e6) return `${(f / 1e6).toFixed(0)}MHz`;
+        if (f >= 1e3) return `${(f / 1e3).toFixed(0)}kHz`;
+        return `${f.toFixed(0)}Hz`;
+    }
+
+    drawLogFrequencyGrid(targetSvg, w, h, logMin, logMax, yMin, yMax, yUnit) {
+        // Decade vertical gridlines with Hz labels, linear Y gridlines
+        const grid = document.createElementNS("http://www.w3.org/2000/svg", "g");
+
+        for (let d = Math.ceil(logMin); d <= Math.floor(logMax); d++) {
+            const gx = 40 + ((d - logMin) / (logMax - logMin)) * (w - 60);
+            const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            line.setAttribute("x1", gx);
+            line.setAttribute("y1", "15");
+            line.setAttribute("x2", gx);
+            line.setAttribute("y2", h - 30);
+            line.setAttribute("stroke", "rgba(255,255,255,0.08)");
+            line.setAttribute("stroke-width", "1");
+            grid.appendChild(line);
+
+            const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            label.textContent = this.formatHz(Math.pow(10, d));
+            label.setAttribute("x", gx - 12);
+            label.setAttribute("y", h - 15);
+            label.setAttribute("fill", "#64748b");
+            label.setAttribute("font-size", "8px");
+            grid.appendChild(label);
+        }
+
+        const yDivs = 4;
+        for (let i = 0; i <= yDivs; i++) {
+            const ratio = i / yDivs;
+            const gy = h - 30 - ratio * (h - 45);
+            const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            line.setAttribute("x1", "40");
+            line.setAttribute("y1", gy);
+            line.setAttribute("x2", w - 20);
+            line.setAttribute("y2", gy);
+            line.setAttribute("stroke", "rgba(255,255,255,0.05)");
+            line.setAttribute("stroke-width", "1");
+            grid.appendChild(line);
+
+            const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            label.textContent = `${(yMin + ratio * (yMax - yMin)).toFixed(0)}${yUnit}`;
+            label.setAttribute("x", "2");
+            label.setAttribute("y", gy + 3);
+            label.setAttribute("fill", "#64748b");
+            label.setAttribute("font-size", "8px");
+            grid.appendChild(label);
+        }
+
+        targetSvg.appendChild(grid);
+    }
+
+    plotAC(data) {
+        // Bode plot: magnitude (dB) in the analog panel, phase (deg) below
+        const freqs = data.freqs;
+        const cmap = data.cmap;
+        if (!freqs || freqs.length < 2) return;
+
+        const logMin = Math.log10(freqs[0]);
+        const logMax = Math.log10(freqs[freqs.length - 1]);
+
+        const probedNets = Object.keys(cmap).filter(net =>
+            !net.startsWith("branch_") && net !== "n0" && appStore.probes.has(net));
+
+        const drawCurves = (svg, series, yMin, yMax, yUnit) => {
+            const w = svg.clientWidth || 380;
+            const h = svg.clientHeight || 180;
+            this.drawLogFrequencyGrid(svg, w, h, logMin, logMax, yMin, yMax, yUnit);
+
+            probedNets.forEach((net, idx) => {
+                const wave = series[cmap[net]];
+                const color = this.colors[idx % this.colors.length];
+
+                let points = "";
+                for (let i = 0; i < freqs.length; i++) {
+                    const px = 40 + ((Math.log10(freqs[i]) - logMin) / (logMax - logMin)) * (w - 60);
+                    const clamped = Math.max(yMin, Math.min(yMax, wave[i]));
+                    const py = h - 30 - ((clamped - yMin) / (yMax - yMin)) * (h - 45);
+                    points += `${px.toFixed(1)},${py.toFixed(1)} `;
+                }
+
+                const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+                polyline.setAttribute("points", points.trim());
+                polyline.setAttribute("fill", "none");
+                polyline.setAttribute("stroke", color);
+                polyline.setAttribute("stroke-width", "2");
+
+                const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                label.textContent = net;
+                label.setAttribute("x", w - 50);
+                label.setAttribute("y", 15 + idx * 12);
+                label.setAttribute("fill", color);
+                label.setAttribute("font-size", "9px");
+                label.setAttribute("font-weight", "600");
+
+                svg.appendChild(polyline);
+                svg.appendChild(label);
+            });
+        };
+
+        // Auto-scale magnitude to the probed curves (floor at -100 dB)
+        let magMin = -20.0;
+        let magMax = 10.0;
+        probedNets.forEach(net => {
+            data.magnitude_db[cmap[net]].forEach(v => {
+                if (v > -100 && v < magMin) magMin = v;
+                if (v > magMax) magMax = v;
+            });
+        });
+        magMin = Math.max(-100, Math.floor(magMin / 10) * 10);
+        magMax = Math.ceil(magMax / 10) * 10;
+
+        drawCurves(this.analogSvg, data.magnitude_db, magMin, magMax, "dB");
+        drawCurves(this.digitalSvg, data.phase_deg, -180, 180, "°");
     }
 
     plotDC(data) {

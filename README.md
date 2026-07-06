@@ -48,6 +48,19 @@ VoltCraft supports energy-storing transient integration utilizing two companion 
     *   Capacitor ($C$): $g_{eq} = \frac{2C}{dt}$, $i_{eq} = g_{eq} v(t-dt) + i(t-dt)$.
     *   Inductor ($L$): $g_{eq} = \frac{dt}{2L}$, $i_{eq} = g_{eq} v(t-dt) + i(t-dt)$.
 
+### AC Small-Signal Frequency Analysis (Bode)
+VoltCraft linearizes the circuit at its DC operating point (diodes reduce to their small-signal conductance $g_d$), then solves the complex-valued MNA system per frequency over a logarithmic sweep:
+
+$$\mathbf{A}(j\omega)\, \mathbf{x} = \mathbf{z}, \quad Y_C = j\omega C, \quad Y_L = \frac{1}{j\omega L}$$
+
+Sources carrying an `ac_mag` parameter (with optional `ac_phase` in degrees) drive the sweep; if none is annotated, the first voltage source is driven at $1\text{V}$ so node results read directly as the transfer function. Results are returned as magnitude (dB) and phase (degrees) per net and rendered as a two-pane Bode plot.
+
+### Stimulus Waveforms
+Voltage sources accept a `wave` parameter — `sine` (default), `square`, `triangle`, or `sawtooth` — plus `freq`, `phase` (radians), `offset`, and `duty` (square only). Periodic waves swing $\pm V$ around the offset; a source without a positive `freq` is a DC level.
+
+### Solver Telemetry & Operating-Point Report
+Every DC, transient, and AC run returns a `stats` block (matrix size, Newton-Raphson iteration counts, convergence flag, worst residual, condition estimate) that drives the live diagnostics panel. DC runs additionally return an `operating_point` report with per-component voltage, current, and power (branch currents follow the MNA convention: a delivering source reports negative current). Voltage-defining components left with every terminal on ground are rejected by name instead of surfacing a bare singular-matrix error.
+
 ### Cycle-Basis Mesh Analysis Loop-Finder
 For loop-current cycle equations, VoltCraft finds fundamental loop bases dynamically:
 1.  Executes a Depth-First Search (DFS) spanning tree over two-terminal nodes.
@@ -102,7 +115,7 @@ Serves concurrent agent Designer and Verifier loops utilizing FastAPI:
 
 Vanilla HTML5, precompiled Tailwind CSS (`tailwind.min.css`), and pure ES2022 asynchronous JavaScript:
 *   **SVG Schematic CAD Canvas (`designer.js`):** Interactive placement, snap-to-grid grids, double-click rotations, and 3-segment orthogonal wire layouts.
-*   **Waveform Signal Plotter (`simulator_view.js`):** Renders analog curves and stacked digital logic transitions on SVG panels. Handles zoom/pan, cursor coordinates, and diagnostic probes.
+*   **Waveform Signal Plotter (`simulator_view.js`):** Renders analog curves, stacked digital logic transitions, and AC Bode plots (log-frequency magnitude + phase panes) on SVG panels. Handles zoom/pan, cursor coordinates, and diagnostic probes.
 *   **Agent telemetry Panel (`agent_bridge.js`):** Displays flashing cyan overlays on canvas viewports during ongoing autonomous agent socket edits.
 
 ---

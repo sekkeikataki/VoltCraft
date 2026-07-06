@@ -446,7 +446,12 @@ async def action_run_simulation(agent_id: str, params: Dict[str, Any]) -> Dict[s
 
     if mode == "dc":
         x, cmap = analog.solve_dc()
-        results = {"x": x.tolist(), "cmap": cmap}
+        results = {
+            "x": x.tolist(),
+            "cmap": cmap,
+            "operating_point": analog.dc_operating_report(x),
+            "stats": analog.last_solve_stats
+        }
     elif mode == "transient":
         t_stop = float(sim_params.get("t_stop", 0.05))
         dt = float(sim_params.get("dt", 0.001))
@@ -457,7 +462,21 @@ async def action_run_simulation(agent_id: str, params: Dict[str, Any]) -> Dict[s
         results = {
             "waveforms": results_mat.tolist(),
             "times": times,
-            "cmap": cmap
+            "cmap": cmap,
+            "stats": analog.last_solve_stats
+        }
+    elif mode == "ac":
+        f_start = float(sim_params.get("f_start", 1.0))
+        f_stop = float(sim_params.get("f_stop", 1e6))
+        points_per_decade = int(sim_params.get("points_per_decade", 20))
+
+        freqs, magnitude_db, phase_deg, cmap = analog.solve_ac(f_start, f_stop, points_per_decade)
+        results = {
+            "freqs": freqs,
+            "magnitude_db": magnitude_db.tolist(),
+            "phase_deg": phase_deg.tolist(),
+            "cmap": cmap,
+            "stats": analog.last_solve_stats
         }
     elif mode == "digital":
         scheduler = DiscreteEventScheduler()

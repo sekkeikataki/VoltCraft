@@ -80,12 +80,17 @@ class VoltCraftApp {
         btn.disabled = true;
         btn.textContent = "SOLVING...";
 
-        const params = {
-            t_stop: mode === "dc" ? 0.0 : mode === "mixed" ? 0.001 : 0.05,
-            dt: mode === "dc" ? 1.0 : mode === "mixed" ? 1e-5 : 0.001,
-            method: "trapezoidal",
-            uic: true
-        };
+        let params;
+        if (mode === "ac") {
+            params = { f_start: 1.0, f_stop: 1e6, points_per_decade: 20 };
+        } else {
+            params = {
+                t_stop: mode === "dc" ? 0.0 : mode === "mixed" ? 0.001 : 0.05,
+                dt: mode === "dc" ? 1.0 : mode === "mixed" ? 1e-5 : 0.001,
+                method: "trapezoidal",
+                uic: true
+            };
+        }
 
         // For mixed mode co-sim, add initial step events
         if (mode === "mixed") {
@@ -263,29 +268,40 @@ class VoltCraftApp {
     }
 
     updateTelemetry(mode, data) {
-        // Populate mechatronic metrics dynamically
+        // Populate solver diagnostics from the engine's reported stats
         const condEl = document.getElementById("stat-matrix-cond");
         const resEl = document.getElementById("stat-newton-res");
         const stepsEl = document.getElementById("stat-timesteps");
         const dimEl = document.getElementById("stat-matrix-dim");
-        
-        // Analog nodes count + voltage sources
+
+        const stats = data.stats;
+        if (stats) {
+            dimEl.textContent = `${stats.matrix_size} x ${stats.matrix_size}`;
+            condEl.textContent = stats.condition_estimate !== undefined
+                ? stats.condition_estimate.toExponential(2) : "—";
+            resEl.textContent = stats.residual !== undefined
+                ? stats.residual.toExponential(2) : "—";
+
+            if (stats.analysis === "dc") {
+                stepsEl.textContent = `${stats.newton_iterations} NR${stats.converged ? "" : " (DIVERGED)"}`;
+            } else if (stats.analysis === "transient") {
+                stepsEl.textContent = `${stats.timesteps} steps / ${stats.newton_iterations} NR`;
+            } else if (stats.analysis === "ac") {
+                stepsEl.textContent = `${stats.points} freq pts`;
+            }
+            return;
+        }
+
+        // Modes without engine stats (digital / mixed co-sim)
         const numNets = this.graph.nets.length - 1;
         const numVolts = this.graph.nodes.filter(n => n.type === "voltage_source" || n.type === "opamp").length;
         dimEl.textContent = `${numNets + numVolts} x ${numNets + numVolts}`;
-
-        if (mode === "dc" && data.x) {
-            condEl.textContent = "1.05e+02";
-            resEl.textContent = "3.14e-09";
-            stepsEl.textContent = "DC SOLVED";
-        } else if (mode === "transient" && data.waveforms) {
-            condEl.textContent = "2.41e+02";
-            resEl.textContent = "8.60e-08";
-            stepsEl.textContent = `${data.times.length} BE Steps`;
-        } else if (mode === "mixed" && data.analog_times) {
-            condEl.textContent = "5.19e+02";
-            resEl.textContent = "1.02e-07";
+        condEl.textContent = "—";
+        resEl.textContent = "—";
+        if (mode === "mixed" && data.analog_times) {
             stepsEl.textContent = `${data.analog_times.length} CO-Sim`;
+        } else {
+            stepsEl.textContent = "—";
         }
     }
 

@@ -41,6 +41,62 @@ def _stamp_voltage_branch(A: np.ndarray, ia: Optional[int], ib: Optional[int], b
         A[br_idx, ib] -= 1.0
 
 
+def _require_wired_branch(n_id: str, n_type: str, ia: Optional[int], ib: Optional[int]) -> None:
+    """
+    A voltage-defining branch with every terminal on ground produces an
+    all-zero matrix row (an unsolvable short); report it by name instead of
+    letting numpy fail with a bare 'Singular matrix'.
+    """
+    if ia is None and ib is None:
+        raise ValueError(
+            f"'{n_id}' ({n_type}) has every terminal on ground net n0 - wire its pins before simulating"
+        )
+
+
+def source_voltage_at(params: Dict[str, Any], t: float) -> float:
+    """
+    Evaluates a voltage source's value at time t.
+
+    Waveform parameters:
+        V:      amplitude (peak for periodic waves, level for DC), default 5.0
+        freq:   frequency in Hz; a positive freq makes the source periodic
+        wave:   "sine" (default), "square", "triangle", or "sawtooth"
+        phase:  phase offset in radians (all waveforms)
+        offset: DC offset added to periodic waveforms, default 0.0
+        duty:   square-wave duty cycle in (0, 1), default 0.5
+
+    Periodic waves swing +/-V around the offset, matching the sine
+    convention. A source without a positive freq is a DC level of V.
+    """
+    v_amp = float(params.get("V", 5.0))
+    freq = float(params.get("freq", 0.0))
+    if freq <= 0.0:
+        return v_amp
+
+    wave = params.get("wave", "sine")
+    phase = float(params.get("phase", 0.0))
+    offset = float(params.get("offset", 0.0))
+
+    if wave == "sine":
+        return offset + v_amp * math.sin(2.0 * math.pi * freq * t + phase)
+
+    # Normalized position in the cycle [0, 1), with phase in radians
+    cycle = (t * freq + phase / (2.0 * math.pi)) % 1.0
+
+    if wave == "square":
+        duty = float(params.get("duty", 0.5))
+        return offset + (v_amp if cycle < duty else -v_amp)
+    elif wave == "triangle":
+        # -V at cycle 0, +V at cycle 0.5, back to -V at cycle 1
+        if cycle < 0.5:
+            return offset + v_amp * (4.0 * cycle - 1.0)
+        return offset + v_amp * (3.0 - 4.0 * cycle)
+    elif wave == "sawtooth":
+        return offset + v_amp * (2.0 * cycle - 1.0)
+
+    raise ValueError(f"Unknown source waveform: {wave!r}")
+
+
 class ContinuousSolver:
     """
     Continuous-time analog circuit solver.
@@ -52,6 +108,9 @@ class ContinuousSolver:
         self.edges = edges
         self.g_min = 1e-12  # Minimum shunt conductance to prevent singular matrices
         self._mappings_cache = None
+        # Populated by solve_dc/solve_transient/solve_ac with convergence
+        # diagnostics for the most recent analysis (see each method)
+        self.last_solve_stats: Optional[Dict[str, Any]] = None
 
     def _get_nets_and_mappings(self) -> Tuple[List[str], Dict[str, int], List[Dict[str, Any]]]:
         """
@@ -149,17 +208,13 @@ class ContinuousSolver:
                 _stamp_current_injection(z, pin_index(pins, "a"), pin_index(pins, "b"), -i_val)
 
             elif n_type == "voltage_source":
-                v_val = float(params.get("V", 5.0))
-                # Sinusoidal or transient function support
-                if "freq" in params:
-                    freq = float(params["freq"])
-                    phase = float(params.get("phase", 0.0))
-                    v_val = v_val * math.sin(2.0 * math.pi * freq * t + phase)
-
                 br_idx = volt_map[n_id]
                 # Pin a is positive, pin b negative
-                _stamp_voltage_branch(A, pin_index(pins, "a"), pin_index(pins, "b"), br_idx)
-                z[br_idx] = v_val
+                ia = pin_index(pins, "a")
+                ib = pin_index(pins, "b")
+                _require_wired_branch(n_id, n_type, ia, ib)
+                _stamp_voltage_branch(A, ia, ib, br_idx)
+                z[br_idx] = source_voltage_at(params, t)
 
             elif n_type == "diode":
                 ia = pin_index(pins, "anode")
@@ -256,7 +311,9 @@ class ContinuousSolver:
                 v_val = float(params.get("V", 0.0))
                 br_idx = volt_map[n_id]
                 # Output pin referenced to ground
-                _stamp_voltage_branch(A, pin_index(pins, "analog_out"), None, br_idx)
+                ia = pin_index(pins, "analog_out")
+                _require_wired_branch(n_id, n_type, ia, None)
+                _stamp_voltage_branch(A, ia, None, br_idx)
                 z[br_idx] = v_val
 
         # Construct comprehensive index mapping log
@@ -322,17 +379,22 @@ class ContinuousSolver:
             history[f"{n_id}_i"] = i_new
 
     def newton_transient_step(self, t: float, dt: float, history: Dict[str, Any], x0: np.ndarray,
-                              max_iter: int = 80, tol: float = 1e-6) -> np.ndarray:
-        """Solves one timestep's MNA system by Newton-Raphson iteration from x0."""
+                              max_iter: int = 80, tol: float = 1e-6) -> Tuple[np.ndarray, int, float]:
+        """
+        Solves one timestep's MNA system by Newton-Raphson iteration from x0.
+        Returns (solution, iterations_used, final_step_norm).
+        """
         x_curr = x0.copy()
-        for _ in range(max_iter):
+        diff = 0.0
+        iterations = 0
+        for iterations in range(1, max_iter + 1):
             A, z, _ = self.assemble_mna(t, dt, history, prev_x=x_curr)
             x_next = np.linalg.solve(A, z)
             diff = np.linalg.norm(x_next - x_curr)
             x_curr = x_next
             if diff < tol:
                 break
-        return x_curr
+        return x_curr, iterations, float(diff)
 
     def solve_dc(self, max_iter: int = 150, tol: float = 1e-6) -> Tuple[np.ndarray, Dict[str, int]]:
         """
@@ -347,7 +409,11 @@ class ContinuousSolver:
         steps = 10
         x = np.zeros(size)
         history = {"integration_method": "backward_euler"}
-        
+        total_iterations = 0
+        converged = True
+        final_diff = 0.0
+        A = np.zeros((0, 0))
+
         for step in range(1, steps + 1):
             scale = step / float(steps)
             
@@ -409,11 +475,24 @@ class ContinuousSolver:
                 # Check residual tolerance
                 diff = np.linalg.norm(next_x - x)
                 x = next_x
+                total_iterations += 1
+                final_diff = float(diff)
                 if diff < tol:
+                    converged = True
                     break
             else:
-                # If convergence fails, return last best guess
-                pass
+                # If convergence fails, carry on with the last best guess
+                converged = False
+
+        self.last_solve_stats = {
+            "analysis": "dc",
+            "matrix_size": size,
+            "source_steps": steps,
+            "newton_iterations": total_iterations,
+            "converged": bool(converged),
+            "residual": final_diff,
+            "condition_estimate": float(np.linalg.cond(A)) if A.size else 1.0
+        }
 
         # Return the complete index map (nets plus voltage branch currents)
         # so every entry of x is addressable, matching assemble_mna's map
@@ -448,15 +527,253 @@ class ContinuousSolver:
         self.init_energy_storage_history(x, history)
 
         # Main transient integration loop
+        total_iterations = 0
+        max_step_iterations = 0
+        worst_residual = 0.0
         for step in range(1, steps + 1):
             t = t_start + step * dt
             time_points.append(t)
 
-            x_curr = self.newton_transient_step(t, dt, history, results[:, step - 1])
+            x_curr, iters, residual = self.newton_transient_step(t, dt, history, results[:, step - 1])
+            total_iterations += iters
+            max_step_iterations = max(max_step_iterations, iters)
+            worst_residual = max(worst_residual, residual)
             results[:, step] = x_curr
             self.update_energy_storage_history(x_curr, dt, history, method=method)
 
+        self.last_solve_stats = {
+            "analysis": "transient",
+            "matrix_size": size,
+            "method": method,
+            "timesteps": steps,
+            "newton_iterations": total_iterations,
+            "max_step_iterations": max_step_iterations,
+            "residual": worst_residual
+        }
+
         return results, time_points, cmap
+
+    def _assemble_ac(self, omega: float, x_op: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Assembles the complex-valued small-signal MNA system at angular
+        frequency omega, with nonlinear elements linearized around the DC
+        operating point x_op.
+        """
+        nets_list, net_map, volt_comps = self._get_nets_and_mappings()
+        num_nets = len(net_map)
+        size = num_nets + len(volt_comps)
+
+        A = np.zeros((size, size), dtype=complex)
+        z = np.zeros(size, dtype=complex)
+
+        volt_map = {comp["id"]: num_nets + i for i, comp in enumerate(volt_comps)}
+
+        for idx in range(num_nets):
+            A[idx, idx] += self.g_min
+
+        def pin_index(pins: Dict[str, str], pin_name: str) -> Optional[int]:
+            return net_map.get(pins.get(pin_name, "n0"))
+
+        # AC drive selection: sources carrying an explicit ac_mag are driven;
+        # if none declares one, the first voltage source is driven at 1V
+        # so an unannotated circuit still produces a transfer function.
+        has_explicit_drive = any(
+            "ac_mag" in node.get("params", {})
+            for node in self.nodes
+            if node["type"] in ("voltage_source", "current_source")
+        )
+        implicit_drive_id = None
+        if not has_explicit_drive:
+            for node in self.nodes:
+                if node["type"] == "voltage_source":
+                    implicit_drive_id = node["id"]
+                    break
+
+        def ac_drive(node: Dict[str, Any]) -> complex:
+            params = node.get("params", {})
+            if "ac_mag" in params:
+                mag = float(params["ac_mag"])
+                phase_deg = float(params.get("ac_phase", 0.0))
+                return mag * complex(math.cos(math.radians(phase_deg)),
+                                     math.sin(math.radians(phase_deg)))
+            if node["id"] == implicit_drive_id:
+                return complex(1.0, 0.0)
+            return complex(0.0, 0.0)
+
+        for node in self.nodes:
+            n_type = node["type"]
+            n_id = node["id"]
+            pins = node.get("pins", {})
+            params = node.get("params", {})
+
+            if n_type == "resistor":
+                r_val = _positive_param(params, "R", 1000.0, n_id)
+                _stamp_conductance(A, pin_index(pins, "a"), pin_index(pins, "b"), 1.0 / r_val)
+
+            elif n_type == "capacitor":
+                c_val = _positive_param(params, "C", 1e-6, n_id)
+                _stamp_conductance(A, pin_index(pins, "a"), pin_index(pins, "b"), 1j * omega * c_val)
+
+            elif n_type == "inductor":
+                l_val = _positive_param(params, "L", 1e-3, n_id)
+                _stamp_conductance(A, pin_index(pins, "a"), pin_index(pins, "b"), 1.0 / (1j * omega * l_val))
+
+            elif n_type == "diode":
+                # Small-signal conductance at the DC operating point
+                ia = pin_index(pins, "anode")
+                ic = pin_index(pins, "cathode")
+                Is = float(params.get("Is", 1e-14))
+                N = float(params.get("N", 1.0))
+                Vt = float(params.get("Vt", 0.02585))
+
+                v_a = x_op[ia] if ia is not None else 0.0
+                v_c = x_op[ic] if ic is not None else 0.0
+                v_d = max(-10.0, min(v_a - v_c, 2.0))
+                g_d = (Is / (N * Vt)) * math.exp(v_d / (N * Vt))
+                _stamp_conductance(A, ia, ic, g_d)
+
+            elif n_type == "current_source":
+                # Injects only its declared AC magnitude (DC value is bias)
+                _stamp_current_injection(z, pin_index(pins, "a"), pin_index(pins, "b"), -ac_drive(node))
+
+            elif n_type == "voltage_source":
+                br_idx = volt_map[n_id]
+                ia = pin_index(pins, "a")
+                ib = pin_index(pins, "b")
+                _require_wired_branch(n_id, n_type, ia, ib)
+                _stamp_voltage_branch(A, ia, ib, br_idx)
+                z[br_idx] = ac_drive(node)
+
+            elif n_type == "opamp":
+                ini = pin_index(pins, "non_inverting")
+                iinv = pin_index(pins, "inverting")
+                iout = pin_index(pins, "out")
+
+                gain = float(params.get("gain", 1e5))
+                Rin = _positive_param(params, "Rin", 1e6, n_id)
+                Rout = float(params.get("Rout", 50.0))
+
+                _stamp_conductance(A, ini, iinv, 1.0 / Rin)
+
+                br_idx = volt_map[n_id]
+                _stamp_voltage_branch(A, iout, None, br_idx)
+                if ini is not None:
+                    A[br_idx, ini] -= gain
+                if iinv is not None:
+                    A[br_idx, iinv] += gain
+                A[br_idx, br_idx] -= Rout
+                z[br_idx] = 0.0
+
+            elif n_type == "digital_interface_out":
+                # A driven rail is an AC ground
+                br_idx = volt_map[n_id]
+                ia = pin_index(pins, "analog_out")
+                _require_wired_branch(n_id, n_type, ia, None)
+                _stamp_voltage_branch(A, ia, None, br_idx)
+                z[br_idx] = 0.0
+
+        return A, z
+
+    def solve_ac(self, f_start: float, f_stop: float, points_per_decade: int = 20) -> Tuple[List[float], np.ndarray, np.ndarray, Dict[str, int]]:
+        """
+        Computes the small-signal frequency response over a logarithmic sweep.
+
+        The circuit is linearized at its DC operating point, then a complex
+        MNA system is solved per frequency point. Sources with an 'ac_mag'
+        parameter drive the sweep (magnitude + 'ac_phase' degrees); without
+        any, the first voltage source is driven at 1V so results read
+        directly as the transfer function.
+
+        Returns:
+            (frequencies, magnitude_db, phase_deg, complete_index_map)
+            where magnitude_db and phase_deg are (size x num_points) arrays.
+        """
+        if f_start <= 0.0:
+            raise ValueError(f"AC sweep f_start must be positive, got {f_start}")
+        if f_stop <= f_start:
+            raise ValueError(f"AC sweep f_stop ({f_stop}) must be greater than f_start ({f_start})")
+        if points_per_decade < 1:
+            raise ValueError(f"points_per_decade must be at least 1, got {points_per_decade}")
+
+        # DC operating point for linearization of nonlinear devices
+        x_op, cmap = self.solve_dc()
+
+        nets_list, net_map, volt_comps = self._get_nets_and_mappings()
+        size = len(net_map) + len(volt_comps)
+
+        decades = math.log10(f_stop / f_start)
+        num_points = max(2, int(math.ceil(decades * points_per_decade)) + 1)
+        freqs = list(np.logspace(math.log10(f_start), math.log10(f_stop), num_points))
+
+        magnitude_db = np.zeros((size, num_points))
+        phase_deg = np.zeros((size, num_points))
+
+        for k, freq in enumerate(freqs):
+            A, z = self._assemble_ac(2.0 * math.pi * freq, x_op)
+            x = np.linalg.solve(A, z)
+            magnitude_db[:, k] = 20.0 * np.log10(np.maximum(np.abs(x), 1e-18))
+            phase_deg[:, k] = np.degrees(np.angle(x))
+
+        self.last_solve_stats = {
+            "analysis": "ac",
+            "matrix_size": size,
+            "points": num_points,
+            "f_start": f_start,
+            "f_stop": f_stop
+        }
+
+        return freqs, magnitude_db, phase_deg, cmap
+
+    def dc_operating_report(self, x: np.ndarray) -> Dict[str, Dict[str, float]]:
+        """
+        Derives per-component operating-point quantities (voltage, current,
+        power) from a solved DC vector x. Branch currents follow the MNA
+        convention: positive current flows into the source's positive pin,
+        so a delivering source reports negative current and power.
+        """
+        nets_list, net_map, volt_comps = self._get_nets_and_mappings()
+        volt_map = {comp["id"]: len(net_map) + i for i, comp in enumerate(volt_comps)}
+
+        def net_voltage(pins: Dict[str, str], pin_name: str) -> float:
+            idx = net_map.get(pins.get(pin_name, "n0"))
+            return float(x[idx]) if idx is not None else 0.0
+
+        report: Dict[str, Dict[str, float]] = {}
+        for node in self.nodes:
+            n_type = node["type"]
+            n_id = node["id"]
+            pins = node.get("pins", {})
+            params = node.get("params", {})
+
+            if n_type == "resistor":
+                v = net_voltage(pins, "a") - net_voltage(pins, "b")
+                i = v / _positive_param(params, "R", 1000.0, n_id)
+                report[n_id] = {"v": v, "i": i, "p": v * i}
+            elif n_type == "diode":
+                v_d = net_voltage(pins, "anode") - net_voltage(pins, "cathode")
+                Is = float(params.get("Is", 1e-14))
+                N = float(params.get("N", 1.0))
+                Vt = float(params.get("Vt", 0.02585))
+                v_lim = max(-10.0, min(v_d, 2.0))
+                i = Is * (math.exp(v_lim / (N * Vt)) - 1.0)
+                report[n_id] = {"v": v_d, "i": i, "p": v_d * i}
+            elif n_type == "voltage_source":
+                v = net_voltage(pins, "a") - net_voltage(pins, "b")
+                i = float(x[volt_map[n_id]])
+                report[n_id] = {"v": v, "i": i, "p": v * i}
+            elif n_type == "current_source":
+                v = net_voltage(pins, "a") - net_voltage(pins, "b")
+                i = float(params.get("I", 0.0))
+                report[n_id] = {"v": v, "i": i, "p": v * i}
+            elif n_type == "capacitor":
+                v = net_voltage(pins, "a") - net_voltage(pins, "b")
+                report[n_id] = {"v": v, "i": 0.0, "p": 0.0}
+            elif n_type == "opamp":
+                v_out = net_voltage(pins, "out")
+                i_out = float(x[volt_map[n_id]])
+                report[n_id] = {"v": v_out, "i": i_out, "p": v_out * i_out}
+
+        return report
 
     def assemble_mesh(self) -> Tuple[np.ndarray, np.ndarray, List[List[str]]]:
         """
@@ -825,7 +1142,7 @@ class MixedSignalCoSimulator:
             t_next = t + dt
 
             # Solve analog MNA step
-            x_curr = self.analog.newton_transient_step(t_next, dt, history, x, max_iter=50)
+            x_curr, _, _ = self.analog.newton_transient_step(t_next, dt, history, x, max_iter=50)
 
 
             # Check comparator crossings
