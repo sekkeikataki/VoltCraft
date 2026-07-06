@@ -38,7 +38,11 @@ class DrawioCodec:
             "diode": ["anode", "cathode"],
             "opamp": ["non_inverting", "inverting", "out"],
             "voltage_source": ["a", "b"],
-            "current_source": ["a", "b"]
+            "current_source": ["a", "b"],
+            "nmos": ["gate", "drain", "source"],
+            "pmos": ["gate", "drain", "source"],
+            "bjt_npn": ["base", "collector", "emitter"],
+            "bjt_pnp": ["base", "collector", "emitter"]
         }
         return mapping.get(node_type, ["a", "b"])
 
@@ -74,6 +78,12 @@ class DrawioCodec:
             if rel_x <= 0.1:
                 return "inverting" if rel_y >= 0.5 else "non_inverting"
             return "out"
+        elif node_type in ("nmos", "pmos", "bjt_npn", "bjt_pnp"):
+            # Control pin on the left; drain/collector upper right,
+            # source/emitter lower right
+            if rel_x <= 0.1:
+                return pins[0]
+            return pins[1] if rel_y < 0.5 else pins[2]
         elif len(pins) == 2:
             # Typically terminal 'a' is left/top, 'b' is right/bottom
             if rel_x <= 0.3 or rel_y <= 0.3:

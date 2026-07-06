@@ -164,6 +164,34 @@ class DatasheetScraper:
                 "params": {"gain": 2e5, "Rin": 1e12, "Rout": 100.0},
                 "manufacturer": "Texas Instruments",
                 "source": "Local-Scraped-Offline"
+            },
+            "2N7000": {
+                "part_number": "2N7000",
+                "type": "nmos",
+                "params": {"K": 0.0972, "Vth": 2.1, "lambda": 0.01},
+                "manufacturer": "ON Semiconductor",
+                "source": "Local-Scraped-Offline"
+            },
+            "BS250": {
+                "part_number": "BS250",
+                "type": "pmos",
+                "params": {"K": 0.056, "Vth": 1.8, "lambda": 0.02},
+                "manufacturer": "Vishay",
+                "source": "Local-Scraped-Offline"
+            },
+            "2N2222": {
+                "part_number": "2N2222",
+                "type": "bjt_npn",
+                "params": {"Is": 1e-14, "beta_f": 200.0, "beta_r": 3.0, "Vt": 0.02585},
+                "manufacturer": "ON Semiconductor",
+                "source": "Local-Scraped-Offline"
+            },
+            "BC557": {
+                "part_number": "BC557",
+                "type": "bjt_pnp",
+                "params": {"Is": 1.1e-14, "beta_f": 300.0, "beta_r": 4.0, "Vt": 0.02585},
+                "manufacturer": "Nexperia",
+                "source": "Local-Scraped-Offline"
             }
         }
         

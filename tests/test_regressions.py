@@ -229,6 +229,30 @@ def test_wire_pins_merges_two_existing_nets():
     assert is_valid, msg
 
 
+def test_diode_companion_satisfies_kcl():
+    # The diode companion current source used to be stamped with an
+    # inverted sign: Newton-Raphson never converged and the voltage
+    # limiter dragged the answer into a plausible-looking 0.6-0.75V range
+    # while KCL was violated by orders of magnitude
+    import math
+    nodes = [
+        {"id": "V1", "type": "voltage_source", "params": {"V": 5.0}, "pins": {"a": "n1", "b": "n0"}},
+        {"id": "R1", "type": "resistor", "params": {"R": 1000.0}, "pins": {"a": "n1", "b": "n2"}},
+        {"id": "D1", "type": "diode", "params": {"Is": 1e-14, "N": 1.0, "Vt": 0.02585},
+         "pins": {"anode": "n2", "cathode": "n0"}}
+    ]
+    solver = ContinuousSolver(nodes, [])
+    x, cmap = solver.solve_dc()
+
+    v_d = x[cmap["n2"]]
+    i_r = (x[cmap["n1"]] - v_d) / 1000.0
+    i_d = 1e-14 * (math.exp(v_d / 0.02585) - 1.0)
+
+    assert abs(i_r - i_d) < 1e-9, f"KCL violated: {i_r} vs {i_d}"
+    assert abs(v_d - 0.69249) < 1e-3
+    assert solver.last_solve_stats["converged"] is True
+
+
 def test_solver_rejects_nonpositive_component_values():
     nodes = [
         {"id": "V1", "type": "voltage_source", "params": {"V": 5.0}, "pins": {"a": "n1", "b": "n0"}},

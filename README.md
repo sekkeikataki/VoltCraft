@@ -48,6 +48,13 @@ VoltCraft supports energy-storing transient integration utilizing two companion 
     *   Capacitor ($C$): $g_{eq} = \frac{2C}{dt}$, $i_{eq} = g_{eq} v(t-dt) + i(t-dt)$.
     *   Inductor ($L$): $g_{eq} = \frac{dt}{2L}$, $i_{eq} = g_{eq} v(t-dt) + i(t-dt)$.
 
+### Transistor Device Models
+*   **MOSFET (types `nmos` / `pmos`):** level-1 square-law model with cutoff, triode, and saturation regions, channel-length modulation ($\lambda$), symmetric drain-source reversal, and PMOS polarity mirroring. Params: `K` [A/V²], `Vth` [V], `lambda` [1/V].
+    $$I_D^{sat} = \frac{K}{2}\left(V_{GS} - V_{th}\right)^2 (1 + \lambda V_{DS})$$
+*   **BJT (types `bjt_npn` / `bjt_pnp`):** full Ebers-Moll two-junction model valid in cutoff, active, and saturation. Params: `Is` [A], `beta_f`, `beta_r`, `Vt` [V]. Active-region current gain $I_C/I_B = \beta_F$ falls out of the model rather than being imposed.
+
+Both devices are linearized per Newton-Raphson iteration into $g_m$/$g_{ds}$ companion stamps shared by the DC, transient, and AC analyses, and both report bias quantities ($V_{GS}$, $I_D$, $V_{BE}$, $I_C$, ...) in the DC operating-point output.
+
 ### AC Small-Signal Frequency Analysis (Bode)
 VoltCraft linearizes the circuit at its DC operating point (diodes reduce to their small-signal conductance $g_d$), then solves the complex-valued MNA system per frequency over a logarithmic sweep:
 
@@ -114,7 +121,8 @@ Serves concurrent agent Designer and Verifier loops utilizing FastAPI:
 ## 6. Premium Single-Page Workbench Interface
 
 Vanilla HTML5, precompiled Tailwind CSS (`tailwind.min.css`), and pure ES2022 asynchronous JavaScript:
-*   **SVG Schematic CAD Canvas (`designer.js`):** Interactive placement, snap-to-grid grids, double-click rotations, and 3-segment orthogonal wire layouts.
+*   **SVG Schematic CAD Canvas (`designer.js`):** Interactive placement, snap-to-grid grids, double-click rotations, and 3-segment orthogonal wire layouts. Clicking a component selects it and opens the sidebar **component inspector**, where every model parameter can be edited live (`update_params` action) with the change journaled and broadcast to all clients.
+*   **Diagnostic Probes:** Any net voltage — and any branch current carried in the MNA solution (`I(V1)`, `I(U1)`, ...) — can be toggled as a probe and plotted in the transient and AC views.
 *   **Waveform Signal Plotter (`simulator_view.js`):** Renders analog curves, stacked digital logic transitions, and AC Bode plots (log-frequency magnitude + phase panes) on SVG panels. Handles zoom/pan, cursor coordinates, and diagnostic probes.
 *   **Agent telemetry Panel (`agent_bridge.js`):** Displays flashing cyan overlays on canvas viewports during ongoing autonomous agent socket edits.
 

@@ -154,6 +154,29 @@
                     </div>
                 </div>
 
+                <!-- Group: Transistors -->
+                <div class="flex flex-col gap-2">
+                    <span class="text-[9px] font-bold text-gray-500 uppercase tracking-widest">Transistors</span>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button class="tool-btn flex flex-col items-center justify-center p-2 rounded-lg bg-gray-950/40 border border-gray-850 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-300 transition duration-150" data-type="nmos">
+                            <span class="text-xs font-semibold">NMOS</span>
+                            <span class="text-[8px] text-gray-600">Level-1 FET</span>
+                        </button>
+                        <button class="tool-btn flex flex-col items-center justify-center p-2 rounded-lg bg-gray-950/40 border border-gray-850 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-300 transition duration-150" data-type="pmos">
+                            <span class="text-xs font-semibold">PMOS</span>
+                            <span class="text-[8px] text-gray-600">Level-1 FET</span>
+                        </button>
+                        <button class="tool-btn flex flex-col items-center justify-center p-2 rounded-lg bg-gray-950/40 border border-gray-850 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-300 transition duration-150" data-type="bjt_npn">
+                            <span class="text-xs font-semibold">NPN</span>
+                            <span class="text-[8px] text-gray-600">Ebers-Moll</span>
+                        </button>
+                        <button class="tool-btn flex flex-col items-center justify-center p-2 rounded-lg bg-gray-950/40 border border-gray-850 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-300 transition duration-150" data-type="bjt_pnp">
+                            <span class="text-xs font-semibold">PNP</span>
+                            <span class="text-[8px] text-gray-600">Ebers-Moll</span>
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Group 3: Digital Logic -->
                 <div class="flex flex-col gap-2">
                     <span class="text-[9px] font-bold text-gray-500 uppercase tracking-widest">Digital Logic</span>
@@ -176,12 +199,21 @@
                         </button>
                     </div>
                 </div>
+                <!-- Component Inspector -->
+                <div class="flex flex-col gap-2" id="inspector-panel">
+                    <span class="text-[9px] font-bold text-gray-500 uppercase tracking-widest">component inspector</span>
+                    <div id="inspector-body" class="rounded-lg bg-gray-950/60 border border-gray-800 p-3 flex flex-col gap-2">
+                        <p id="inspector-empty" class="text-[10px] text-gray-500 italic">Click a component on the canvas to edit its parameters.</p>
+                        <div id="inspector-fields" class="flex flex-col gap-1.5 hidden"></div>
+                        <button id="inspector-apply" class="hidden px-2 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-[10px] font-semibold uppercase tracking-wide text-white transition">Apply</button>
+                    </div>
+                </div>
             </div>
-            
+
             <!-- Quick Helper Info -->
             <div class="p-4 border-t border-gray-800/80 bg-gray-950/40">
                 <span class="text-[8px] font-bold text-gray-500 uppercase tracking-widest block mb-1">hotkey reference</span>
-                <p class="text-[9px] text-gray-400 leading-normal">Double-click component on canvas to rotate it 90 degrees. Drag elements with mouse. Click pins to wire them.</p>
+                <p class="text-[9px] text-gray-400 leading-normal">Double-click component on canvas to rotate it 90 degrees. Drag elements with mouse. Click pins to wire them. Click a body to inspect parameters.</p>
             </div>
         </aside>
 

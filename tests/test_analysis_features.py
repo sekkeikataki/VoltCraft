@@ -191,6 +191,60 @@ def test_dc_operating_point_report():
     assert stats["condition_estimate"] > 1.0
 
 
+def test_api_update_params():
+    path = os.path.join(SCHEMATICS_DIR, AC_TEST_FILE)
+    r = client.post("/api/agent/action", json={"action": "load_schematic", "params": {"path": path}})
+    assert r.json()["status"] == "ok"
+    r = client.post("/api/agent/action", json={
+        "action": "place_component",
+        "params": {"path": path, "type": "resistor", "params": {"R": 1000.0}}
+    })
+    node_id = r.json()["data"]["node_id"]
+
+    r = client.post("/api/agent/action", json={
+        "action": "update_params",
+        "params": {"path": path, "id": node_id, "params": {"R": 4700.0, "tol": 0.01}}
+    })
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["data"]["params"]["R"] == 4700.0
+    assert body["data"]["params"]["tol"] == 0.01
+
+    live = active_schematics[path]
+    node = next(n for n in live["nodes"] if n["id"] == node_id)
+    assert node["params"]["R"] == 4700.0
+
+    # Unknown component is rejected by name
+    r = client.post("/api/agent/action", json={
+        "action": "update_params",
+        "params": {"path": path, "id": "ZZ9", "params": {"R": 1.0}}
+    })
+    assert r.status_code == 400
+    assert "ZZ9" in r.json()["error"]["message"]
+
+
+def test_transistor_placement_defaults():
+    path = os.path.join(SCHEMATICS_DIR, AC_TEST_FILE)
+    r = client.post("/api/agent/action", json={"action": "load_schematic", "params": {"path": path}})
+    assert r.json()["status"] == "ok"
+
+    r = client.post("/api/agent/action", json={
+        "action": "place_component",
+        "params": {"path": path, "type": "nmos", "params": {"K": 2e-3, "Vth": 1.0}}
+    })
+    assert r.json()["data"]["node_id"] == "M1"
+    r = client.post("/api/agent/action", json={
+        "action": "place_component",
+        "params": {"path": path, "type": "bjt_npn", "params": {}}
+    })
+    assert r.json()["data"]["node_id"] == "Q1"
+
+    live = active_schematics[path]
+    nodes = {n["id"]: n for n in live["nodes"]}
+    assert set(nodes["M1"]["pins"].keys()) == {"gate", "drain", "source"}
+    assert set(nodes["Q1"]["pins"].keys()) == {"base", "collector", "emitter"}
+
+
 def test_api_dc_returns_stats_and_operating_point():
     path = os.path.join(SCHEMATICS_DIR, AC_TEST_FILE)
     graph = {

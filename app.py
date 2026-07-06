@@ -99,6 +99,33 @@ characteristics:
 ---
 # Operational Amplifiers
 Op-amps are high-gain voltage amplifiers with differential inputs.
+""",
+    "mosfet": """---
+family: mosfet
+iec_code: IEC-60617-5
+equation: Id = K/2 * (Vgs - Vth)^2 * (1 + lambda*Vds)
+characteristics:
+  - Level-1 square-law model (types nmos / pmos)
+  - Params: K [A/V^2], Vth [V], lambda [1/V]
+  - Regions: cutoff, triode, saturation; symmetric drain/source
+---
+# MOSFETs
+Voltage-controlled transistors. The gate voltage relative to the source
+sets the channel current; VoltCraft solves the square-law model with
+Newton-Raphson companion linearization.
+""",
+    "bjt": """---
+family: bjt
+iec_code: IEC-60617-5
+equation: Ic = Is*(exp(Vbe/Vt) - exp(Vbc/Vt)) (Ebers-Moll)
+characteristics:
+  - Ebers-Moll model (types bjt_npn / bjt_pnp)
+  - Params: Is [A], beta_f, beta_r, Vt [V]
+  - Active-region current gain Ic/Ib = beta_f
+---
+# Bipolar Junction Transistors
+Current-controlled transistors modeled with the full Ebers-Moll
+two-junction equations, valid in cutoff, active, and saturation regions.
 """
 }
 
@@ -287,7 +314,11 @@ ID_PREFIXES = {
     "inductor": "L",
     "diode": "D",
     "voltage_source": "V",
-    "current_source": "I"
+    "current_source": "I",
+    "nmos": "M",
+    "pmos": "M",
+    "bjt_npn": "Q",
+    "bjt_pnp": "Q"
 }
 
 TWO_TERMINAL_TYPES = ("resistor", "capacitor", "inductor", "voltage_source", "current_source")
@@ -296,7 +327,11 @@ DEFAULT_PIN_LAYOUTS = {
     "diode": ("anode", "cathode"),
     "opamp": ("non_inverting", "inverting", "out"),
     "analog_comparator": ("analog_in", "digital_out"),
-    "digital_interface_out": ("digital_in", "analog_out")
+    "digital_interface_out": ("digital_in", "analog_out"),
+    "nmos": ("gate", "drain", "source"),
+    "pmos": ("gate", "drain", "source"),
+    "bjt_npn": ("base", "collector", "emitter"),
+    "bjt_pnp": ("base", "collector", "emitter")
 }
 
 def default_pins_for(comp_type: str) -> Dict[str, str]:
@@ -401,6 +436,28 @@ async def action_wire_pins(agent_id: str, params: Dict[str, Any]) -> Dict[str, A
 
     await broadcast_update(path, graph)
     return {"status": "ok", "data": {"edge_id": edge_id, "net": target_net}, "journal_id": j_id}
+
+@agent_action("update_params")
+async def action_update_params(agent_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    require_params(params, "path", "id", "params")
+    path = params["path"]
+    target_id = params["id"]
+    new_params = params["params"]
+
+    if not isinstance(new_params, dict):
+        raise ValueError("params must be a dictionary of component parameters")
+
+    graph = get_loaded_graph(path)
+    node = next((n for n in graph["nodes"] if n["id"] == target_id), None)
+    if node is None:
+        raise ValueError(f"Component '{target_id}' does not exist in schematic")
+
+    node["params"].update(new_params)
+
+    j_id = write_journal_entry(agent_id, "update_params", {"path": path, "id": target_id, "params": new_params}, graph)
+
+    await broadcast_update(path, graph)
+    return {"status": "ok", "data": {"id": target_id, "params": node["params"]}, "journal_id": j_id}
 
 async def _delete_graph_item(agent_id: str, params: Dict[str, Any], action: str) -> Dict[str, Any]:
     require_params(params, "path", "id")

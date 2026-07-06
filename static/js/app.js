@@ -129,6 +129,24 @@ class VoltCraftApp {
         }
     }
 
+    async updateComponentParams(nodeId, params) {
+        try {
+            const res = await this.postAction("update_params", {
+                path: this.activeSchematicPath,
+                id: nodeId,
+                params: params
+            });
+            if (res.status === "ok") {
+                this.logJournal("update_params", { id: nodeId }, res.journal_id);
+                // WebSocket broadcast refreshes the canvas
+            } else {
+                alert(`Parameter update failed: ${res.error.message}`);
+            }
+        } catch (err) {
+            console.error("[VOLTCRAFT] Error updating parameters: ", err);
+        }
+    }
+
     async postAction(action, params) {
         const response = await fetch("/api/agent/action", {
             method: "POST",
@@ -226,45 +244,57 @@ class VoltCraftApp {
         this.updateProbesList();
     }
 
+    addProbeBadge(container, key, label) {
+        const isChecked = this.probes.has(key);
+        const badge = document.createElement("div");
+        badge.className = "flex items-center justify-between px-3 py-1.5 rounded-lg bg-gray-950/60 border border-gray-800 hover:border-cyan-500/40 transition";
+        badge.innerHTML = `
+            <div class="flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full ${isChecked ? 'bg-cyan-400' : 'bg-gray-700'}"></span>
+                <span class="text-xs font-semibold code-font text-gray-300">${label}</span>
+            </div>
+            <input type="checkbox" ${isChecked ? 'checked' : ''} class="w-3.5 h-3.5 rounded bg-gray-950 border-gray-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-gray-900 cursor-pointer" data-net="${key}">
+        `;
+
+        badge.querySelector("input").addEventListener("change", (e) => {
+            if (e.target.checked) {
+                this.probes.add(key);
+            } else {
+                this.probes.delete(key);
+            }
+            this.refreshUI();
+            // Retrigger simulation waveform plot updating
+            if (this.simulatorView && this.simResults) {
+                const mode = document.getElementById("sim-mode").value;
+                this.simulatorView.plot(mode, this.simResults);
+            }
+        });
+
+        container.appendChild(badge);
+    }
+
     updateProbesList() {
         const container = document.getElementById("probes-list");
         container.innerHTML = "";
-        
+
         if (this.graph.nets.length <= 1) {
             container.innerHTML = `<div class="text-[11px] text-gray-500 italic p-3 text-center">Place components and connect nodes to assign waveform diagnostic probes.</div>`;
             return;
         }
 
+        // Net voltage probes
         this.graph.nets.forEach(net => {
             if (net === "n0") return; // Skip GND
-            
-            const isChecked = this.probes.has(net);
-            const badge = document.createElement("div");
-            badge.className = "flex items-center justify-between px-3 py-1.5 rounded-lg bg-gray-950/60 border border-gray-800 hover:border-cyan-500/40 transition";
-            badge.innerHTML = `
-                <div class="flex items-center gap-2">
-                    <span class="w-2 h-2 rounded-full ${isChecked ? 'bg-cyan-400' : 'bg-gray-700'}"></span>
-                    <span class="text-xs font-semibold code-font text-gray-300">Net: ${net}</span>
-                </div>
-                <input type="checkbox" ${isChecked ? 'checked' : ''} class="w-3.5 h-3.5 rounded bg-gray-950 border-gray-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-gray-900 cursor-pointer" data-net="${net}">
-            `;
-            
-            badge.querySelector("input").addEventListener("change", (e) => {
-                if (e.target.checked) {
-                    this.probes.add(net);
-                } else {
-                    this.probes.delete(net);
-                }
-                this.refreshUI();
-                // Retrigger simulation waveform plot updating
-                if (this.simulatorView && this.simResults) {
-                    const mode = document.getElementById("sim-mode").value;
-                    this.simulatorView.plot(mode, this.simResults);
-                }
-            });
-
-            container.appendChild(badge);
+            this.addProbeBadge(container, net, `Net: ${net}`);
         });
+
+        // Branch current probes (voltage-defining components carry their
+        // current in the MNA solution vector)
+        this.graph.nodes
+            .filter(n => ["voltage_source", "opamp", "digital_interface_out"].includes(n.type))
+            .forEach(node => {
+                this.addProbeBadge(container, `branch_${node.id}`, `I(${node.id}) [A]`);
+            });
     }
 
     updateTelemetry(mode, data) {

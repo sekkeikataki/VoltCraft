@@ -27,8 +27,30 @@ class VoltCraftDesigner {
             digital_and: "M 0 10 L 30 10 M 0 30 L 30 30 M 30 5 L 50 5 A 15 15 0 0 1 50 35 L 30 35 Z M 65 20 L 100 20",
             digital_or: "M 0 10 L 25 10 M 0 30 L 25 30 M 20 5 C 32 5, 48 10, 65 20 C 48 30, 32 35, 20 35 C 26 26, 26 14, 20 5 Z M 65 20 L 100 20",
             digital_xor: "M 0 10 L 20 10 M 0 30 L 20 30 M 12 5 C 18 14, 18 26, 12 35 M 20 5 C 26 14, 26 26, 20 35 C 32 5, 48 10, 65 20 C 48 30, 32 35, 20 35 M 65 20 L 100 20",
-            digital_interface_out: "M 0 20 L 30 20 M 70 20 L 100 20 M 30 5 L 70 5 L 70 35 L 30 35 Z"
+            digital_interface_out: "M 0 20 L 30 20 M 70 20 L 100 20 M 30 5 L 70 5 L 70 35 L 30 35 Z",
+            nmos: "M 0 20 L 45 20 M 45 10 L 45 30 M 52 8 L 52 32 M 52 12 L 70 12 L 70 5 L 100 5 M 52 28 L 70 28 L 70 35 L 100 35 M 58 28 L 52 25 L 58 22",
+            pmos: "M 0 20 L 40 20 M 43 20 A 3 3 0 1 1 49 20 A 3 3 0 1 1 43 20 M 52 10 L 52 30 M 58 8 L 58 32 M 58 12 L 72 12 L 72 5 L 100 5 M 58 28 L 72 28 L 72 35 L 100 35",
+            bjt_npn: "M 0 20 L 45 20 M 45 8 L 45 32 M 45 15 L 70 6 L 70 5 L 100 5 M 45 25 L 70 34 L 70 35 L 100 35 M 62 33 L 70 34 L 64 27",
+            bjt_pnp: "M 0 20 L 45 20 M 45 8 L 45 32 M 45 15 L 70 6 L 70 5 L 100 5 M 45 25 L 70 34 L 70 35 L 100 35 M 53 25 L 45 25 L 51 31"
         };
+
+        // Suggested editable parameters per component type for the inspector
+        this.paramHints = {
+            resistor: { R: 1000 },
+            capacitor: { C: 1e-6 },
+            inductor: { L: 1e-3 },
+            diode: { Is: 1e-14, N: 1 },
+            voltage_source: { V: 5, freq: 0, wave: "sine", phase: 0, offset: 0, duty: 0.5, ac_mag: 0 },
+            current_source: { I: 0.001 },
+            opamp: { gain: 1e5, Rin: 1e6, Rout: 50 },
+            nmos: { K: 1e-3, Vth: 1, lambda: 0 },
+            pmos: { K: 1e-3, Vth: 1, lambda: 0 },
+            bjt_npn: { Is: 1e-15, beta_f: 100, beta_r: 1 },
+            bjt_pnp: { Is: 1e-15, beta_f: 100, beta_r: 1 },
+            analog_comparator: { threshold: 2.5 },
+            digital_interface_out: { V: 5, delay: 0 }
+        };
+        this.selectedNodeId = null;
 
         this.initEvents();
     }
@@ -160,6 +182,9 @@ class VoltCraftDesigner {
 
     render(graph) {
         this.activeGraph = graph;
+        if (this.selectedNodeId && !graph.nodes.some(n => n.id === this.selectedNodeId)) {
+            this.clearSelection();  // Selected component was deleted or replaced
+        }
         this.svg.innerHTML = "";
 
         // 1. Draw snap grid dots
@@ -217,11 +242,14 @@ class VoltCraftDesigner {
                 return isNaN(floatVal) ? token : floatVal * this.scale;
             }).join(" ");
 
+            const isSelected = node.id === this.selectedNodeId;
             path.setAttribute("d", scaledPath);
             path.setAttribute("fill", "none");
-            path.setAttribute("stroke", "#f43f5e"); // Hot neon pink
-            path.setAttribute("stroke-width", "2");
-            path.setAttribute("filter", "drop-shadow(0 0 5px rgba(244,63,94,0.3))");
+            path.setAttribute("stroke", isSelected ? "#22d3ee" : "#f43f5e"); // Cyan when selected
+            path.setAttribute("stroke-width", isSelected ? "2.5" : "2");
+            path.setAttribute("filter", isSelected
+                ? "drop-shadow(0 0 6px rgba(34,211,238,0.5))"
+                : "drop-shadow(0 0 5px rgba(244,63,94,0.3))");
             group.appendChild(path);
 
             // Renders component label text
@@ -235,9 +263,10 @@ class VoltCraftDesigner {
             text.setAttribute("font-weight", "600");
             group.appendChild(text);
 
-            // Bind component dragging
+            // Bind component dragging (mousedown also selects for the inspector)
             group.addEventListener("mousedown", (e) => {
                 if (e.target.tagName !== "circle") {  // Skip pin clicks
+                    this.selectNode(node);
                     appStore.pushState();
                     this.draggedNode = node;
                     const rect = this.svg.getBoundingClientRect();
@@ -274,6 +303,14 @@ class VoltCraftDesigner {
                     if (pinName === "a") { pinX = 0; pinY = 10; }
                     else if (pinName === "b") { pinX = 0; pinY = 30; }
                     else if (pinName === "out" || pinName === "q" || pinName === "q_bar") { pinX = 100; pinY = 20; }
+                } else if (node.type === "nmos" || node.type === "pmos") {
+                    if (pinName === "gate") { pinX = 0; pinY = 20; }
+                    else if (pinName === "drain") { pinX = 100; pinY = 5; }
+                    else if (pinName === "source") { pinX = 100; pinY = 35; }
+                } else if (node.type === "bjt_npn" || node.type === "bjt_pnp") {
+                    if (pinName === "base") { pinX = 0; pinY = 20; }
+                    else if (pinName === "collector") { pinX = 100; pinY = 5; }
+                    else if (pinName === "emitter") { pinX = 100; pinY = 35; }
                 } else if (node.type === "analog_comparator") {
                     if (pinName === "analog_in") { pinX = 0; pinY = 20; }
                     else if (pinName === "digital_out") { pinX = 100; pinY = 20; }
@@ -324,6 +361,64 @@ class VoltCraftDesigner {
 
             this.svg.appendChild(group);
         });
+    }
+
+    selectNode(node) {
+        this.selectedNodeId = node.id;
+        this.renderInspector(node);
+        this.render(appStore.graph);
+    }
+
+    clearSelection() {
+        this.selectedNodeId = null;
+        const empty = document.getElementById("inspector-empty");
+        const fields = document.getElementById("inspector-fields");
+        const apply = document.getElementById("inspector-apply");
+        if (!empty) return;
+        empty.classList.remove("hidden");
+        fields.classList.add("hidden");
+        apply.classList.add("hidden");
+    }
+
+    renderInspector(node) {
+        const empty = document.getElementById("inspector-empty");
+        const fields = document.getElementById("inspector-fields");
+        const apply = document.getElementById("inspector-apply");
+        if (!fields) return;
+
+        empty.classList.add("hidden");
+        fields.classList.remove("hidden");
+        apply.classList.remove("hidden");
+        fields.innerHTML = "";
+
+        const header = document.createElement("div");
+        header.className = "text-[10px] font-bold text-cyan-400 code-font mb-1";
+        header.textContent = `${node.id} · ${node.type}`;
+        fields.appendChild(header);
+
+        // Merge suggested defaults with the component's current params so
+        // every relevant knob is visible even before it has been set
+        const merged = { ...(this.paramHints[node.type] || {}), ...node.params };
+        Object.keys(merged).forEach(key => {
+            const row = document.createElement("label");
+            row.className = "flex items-center justify-between gap-2";
+            row.innerHTML = `
+                <span class="text-[10px] text-gray-400 code-font">${key}</span>
+                <input type="text" value="${merged[key]}" data-param="${key}"
+                       class="w-24 bg-gray-950 border border-gray-800 rounded px-1.5 py-0.5 text-[10px] text-gray-200 code-font focus:border-cyan-500/50 outline-none">
+            `;
+            fields.appendChild(row);
+        });
+
+        apply.onclick = async () => {
+            const params = {};
+            fields.querySelectorAll("input[data-param]").forEach(input => {
+                const raw = input.value.trim();
+                const isNumeric = /^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$/.test(raw);
+                params[input.getAttribute("data-param")] = isNumeric ? parseFloat(raw) : raw;
+            });
+            await appStore.updateComponentParams(node.id, params);
+        };
     }
 
     async connectPins(fromPin, toPin) {

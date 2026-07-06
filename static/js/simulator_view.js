@@ -68,6 +68,11 @@ class VoltCraftSimulatorView {
         }
     }
 
+    probeLabel(key) {
+        // Branch keys hold component currents; nets hold voltages
+        return key.startsWith("branch_") ? `I(${key.slice(7)})` : key;
+    }
+
     formatHz(f) {
         if (f >= 1e9) return `${(f / 1e9).toFixed(0)}GHz`;
         if (f >= 1e6) return `${(f / 1e6).toFixed(0)}MHz`;
@@ -134,7 +139,7 @@ class VoltCraftSimulatorView {
         const logMax = Math.log10(freqs[freqs.length - 1]);
 
         const probedNets = Object.keys(cmap).filter(net =>
-            !net.startsWith("branch_") && net !== "n0" && appStore.probes.has(net));
+            net !== "n0" && appStore.probes.has(net));
 
         const drawCurves = (svg, series, yMin, yMax, yUnit) => {
             const w = svg.clientWidth || 380;
@@ -160,7 +165,7 @@ class VoltCraftSimulatorView {
                 polyline.setAttribute("stroke-width", "2");
 
                 const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-                label.textContent = net;
+                label.textContent = this.probeLabel(net);
                 label.setAttribute("x", w - 50);
                 label.setAttribute("y", 15 + idx * 12);
                 label.setAttribute("fill", color);
@@ -250,9 +255,9 @@ class VoltCraftSimulatorView {
         let vMax = -99999.0;
         
         Object.keys(cmap).forEach(net => {
-            if (net.startsWith("branch_")) return;
+            if (net === "n0") return;
             if (!appStore.probes.has(net)) return;  // Plot only checked probes
-            
+
             const netIdx = cmap[net];
             waveforms[netIdx].forEach(val => {
                 if (val < vMin) vMin = val;
@@ -266,10 +271,10 @@ class VoltCraftSimulatorView {
 
         this.drawGrid(this.analogSvg, w, h, tMin, tMax, vMin, vMax, "Time (s)", "Voltage (V)");
 
-        // Plot each active probe curve
+        // Plot each active probe curve (nets and branch currents)
         let colorIdx = 0;
         Object.keys(cmap).forEach(net => {
-            if (net.startsWith("branch_")) return;
+            if (net === "n0") return;
             if (!appStore.probes.has(net)) return;
 
             const netIdx = cmap[net];
@@ -297,7 +302,7 @@ class VoltCraftSimulatorView {
             
             // Add label
             const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-            label.textContent = net;
+            label.textContent = this.probeLabel(net);
             label.setAttribute("x", w - 50);
             label.setAttribute("y", 15 + colorIdx * 12);
             label.setAttribute("fill", color);
@@ -331,7 +336,7 @@ class VoltCraftSimulatorView {
 
             let colorIdx = 0;
             Object.keys(a_map).forEach(net => {
-                if (net.startsWith("branch_")) return;
+                if (net === "n0") return;
                 if (!appStore.probes.has(net)) return;
 
                 const netIdx = a_map[net];

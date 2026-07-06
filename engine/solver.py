@@ -164,6 +164,188 @@ class ContinuousSolver:
             return v_old - 2.0 * nvt
         return v_new
 
+    def _mos_small_signal(self, node: Dict[str, Any], x: Optional[np.ndarray]) -> Dict[str, Any]:
+        """
+        Level-1 (square-law) MOSFET linearization at the voltages in x.
+        Handles cutoff/triode/saturation, drain-source reversal by symmetry,
+        and PMOS polarity. Returns physical-frame quantities: i_d is the
+        current entering the drain terminal, gm/gds the small-signal
+        (trans)conductances, and eff_d/eff_s the (possibly swapped) node
+        indices the stamps apply to.
+        """
+        _, net_map, _ = self._get_nets_and_mappings()
+        pins = node.get("pins", {})
+        params = node.get("params", {})
+        n_id = node["id"]
+
+        p = -1.0 if node["type"] == "pmos" else 1.0
+        ig = net_map.get(pins.get("gate", "n0"))
+        idr = net_map.get(pins.get("drain", "n0"))
+        isr = net_map.get(pins.get("source", "n0"))
+
+        def v_at(idx: Optional[int]) -> float:
+            return float(x[idx]) if (x is not None and idx is not None) else 0.0
+
+        K = _positive_param(params, "K", 1e-3, n_id)       # A/V^2 (already includes W/L)
+        vth = float(params.get("Vth", 1.0))
+        lam = float(params.get("lambda", 0.0))
+
+        vgs = p * (v_at(ig) - v_at(isr))
+        vds = p * (v_at(idr) - v_at(isr))
+
+        # The device is symmetric: for negative vds operate with the
+        # terminals swapped so the model always sees vds >= 0
+        eff_d, eff_s = idr, isr
+        if vds < 0.0:
+            vgs -= vds
+            vds = -vds
+            eff_d, eff_s = isr, idr
+
+        vov = vgs - vth
+        if vov <= 0.0:
+            i_f, gm, gds = 0.0, 0.0, 1e-12
+        elif vds >= vov:
+            # Saturation
+            chan = 1.0 + lam * vds
+            i_f = 0.5 * K * vov * vov * chan
+            gm = K * vov * chan
+            gds = 0.5 * K * vov * vov * lam + 1e-12
+        else:
+            # Triode
+            chan = 1.0 + lam * vds
+            i_f = K * (vov - 0.5 * vds) * vds * chan
+            gm = K * vds * chan
+            gds = K * (vov - vds) * chan + K * (vov - 0.5 * vds) * vds * lam + 1e-12
+
+        return {
+            "i_d": p * i_f,     # current entering the physical drain pin
+            "gm": gm,
+            "gds": gds,
+            "eff_d": eff_d,
+            "eff_s": eff_s,
+            "gate": ig,
+            "vgs": vgs if p > 0 else -vgs,
+            "vds": p * (v_at(idr) - v_at(isr))
+        }
+
+    def _stamp_mos(self, A: np.ndarray, z: Optional[np.ndarray], node: Dict[str, Any], x: Optional[np.ndarray]) -> None:
+        """
+        Stamps the MOSFET companion model: gds across drain-source, a gm
+        transconductance from the gate, and (when z is given) the Newton
+        equivalent current source. With z=None only the small-signal
+        conductances are stamped (AC analysis).
+        """
+        ss = self._mos_small_signal(node, x)
+        ed, es, ig = ss["eff_d"], ss["eff_s"], ss["gate"]
+        gm, gds = ss["gm"], ss["gds"]
+
+        _stamp_conductance(A, ed, es, gds)
+        # Transconductance rows: current gm*(vg - v_eff_s) enters eff_d
+        if ed is not None:
+            if ig is not None:
+                A[ed, ig] += gm
+            if es is not None:
+                A[ed, es] -= gm
+        if es is not None:
+            if ig is not None:
+                A[es, ig] -= gm
+            if es is not None:
+                A[es, es] += gm
+
+        if z is not None:
+            def v_at(idx):
+                return float(x[idx]) if (x is not None and idx is not None) else 0.0
+            # Constant term of the linearized drain current (same companion
+            # pattern as the diode stamp)
+            i_const = ss["i_d"] - gds * (v_at(ed) - v_at(es)) - gm * (v_at(ig) - v_at(es))
+            _stamp_current_injection(z, ed, es, -i_const)
+
+    def _bjt_small_signal(self, node: Dict[str, Any], x: Optional[np.ndarray]) -> Dict[str, Any]:
+        """
+        Ebers-Moll BJT linearization at the voltages in x. Returns the 3x3
+        physical-frame conductance matrix over (collector, base, emitter),
+        the terminal currents entering each pin, and the node indices.
+        """
+        _, net_map, _ = self._get_nets_and_mappings()
+        pins = node.get("pins", {})
+        params = node.get("params", {})
+
+        p = -1.0 if node["type"] == "bjt_pnp" else 1.0
+        ic_ = net_map.get(pins.get("collector", "n0"))
+        ib_ = net_map.get(pins.get("base", "n0"))
+        ie_ = net_map.get(pins.get("emitter", "n0"))
+
+        def v_at(idx: Optional[int]) -> float:
+            return float(x[idx]) if (x is not None and idx is not None) else 0.0
+
+        Is = float(params.get("Is", 1e-15))
+        beta_f = float(params.get("beta_f", 100.0))
+        beta_r = float(params.get("beta_r", 1.0))
+        Vt = float(params.get("Vt", 0.02585))
+
+        a_f = beta_f / (beta_f + 1.0)
+        a_r = beta_r / (beta_r + 1.0)
+        i_es = Is / a_f
+        i_cs = Is / a_r
+
+        # Junction voltages in the NPN frame, clamped like the diode model
+        vbe = max(-10.0, min(p * (v_at(ib_) - v_at(ie_)), 2.0))
+        vbc = max(-10.0, min(p * (v_at(ib_) - v_at(ic_)), 2.0))
+
+        exp_be = math.exp(vbe / Vt)
+        exp_bc = math.exp(vbc / Vt)
+        i_f = i_es * (exp_be - 1.0)
+        i_r = i_cs * (exp_bc - 1.0)
+        g_f = (i_es / Vt) * exp_be
+        g_r = (i_cs / Vt) * exp_bc
+
+        # Terminal currents entering each pin (NPN frame)
+        ic_f = a_f * i_f - i_r
+        ie_f = -i_f + a_r * i_r
+        ib_f = -(ic_f + ie_f)
+
+        # Physical-frame conductance matrix over (c, b, e); polarity cancels
+        # in the quadratic form, only the current constants carry p
+        G = (
+            (g_r, a_f * g_f - g_r, -a_f * g_f),
+            (-(1.0 - a_r) * g_r, (1.0 - a_f) * g_f + (1.0 - a_r) * g_r, -(1.0 - a_f) * g_f),
+            (-a_r * g_r, a_r * g_r - g_f, g_f)
+        )
+
+        return {
+            "indices": (ic_, ib_, ie_),
+            "G": G,
+            "i_terms": (p * ic_f, p * ib_f, p * ie_f),
+            "vbe": p * vbe,
+            "vce": v_at(ic_) - v_at(ie_)
+        }
+
+    def _stamp_bjt(self, A: np.ndarray, z: Optional[np.ndarray], node: Dict[str, Any], x: Optional[np.ndarray]) -> None:
+        """
+        Stamps the BJT companion model over its three terminals. With z=None
+        only the small-signal conductance matrix is stamped (AC analysis).
+        """
+        ss = self._bjt_small_signal(node, x)
+        idxs = ss["indices"]
+        G = ss["G"]
+
+        for row in range(3):
+            if idxs[row] is None:
+                continue
+            for col in range(3):
+                if idxs[col] is not None:
+                    A[idxs[row], idxs[col]] += G[row][col]
+
+        if z is not None:
+            def v_at(idx):
+                return float(x[idx]) if (x is not None and idx is not None) else 0.0
+            volts = [v_at(idx) for idx in idxs]
+            for row in range(3):
+                if idxs[row] is None:
+                    continue
+                i_const = ss["i_terms"][row] - sum(G[row][col] * volts[col] for col in range(3))
+                z[idxs[row]] -= i_const
+
     def assemble_mna(self, t: float, dt: float, history: Dict[str, Any], prev_x: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray, Dict[str, int]]:
         """
         Assembles the MNA system A * x = z at time t with timestep dt.
@@ -238,10 +420,12 @@ class ContinuousSolver:
                 exp_term = math.exp(v_d / (N * Vt))
                 i_d = Is * (exp_term - 1.0)
                 g_d = (Is / (N * Vt)) * exp_term
+                # Companion source I_eq = i_d - g_d*v_d flows anode->cathode;
+                # as an injection that is +(g_d*v_d - i_d) into the anode
                 i_eq = g_d * v_d - i_d
 
                 _stamp_conductance(A, ia, ic, g_d)
-                _stamp_current_injection(z, ia, ic, -i_eq)
+                _stamp_current_injection(z, ia, ic, i_eq)
 
             elif n_type == "capacitor":
                 c_val = _positive_param(params, "C", 1e-6, n_id)
@@ -306,6 +490,12 @@ class ContinuousSolver:
 
                 A[br_idx, br_idx] -= Rout
                 z[br_idx] = 0.0
+
+            elif n_type in ("nmos", "pmos"):
+                self._stamp_mos(A, z, node, prev_x)
+
+            elif n_type in ("bjt_npn", "bjt_pnp"):
+                self._stamp_bjt(A, z, node, prev_x)
 
             elif n_type == "digital_interface_out":
                 v_val = float(params.get("V", 0.0))
@@ -664,6 +854,13 @@ class ContinuousSolver:
                 A[br_idx, br_idx] -= Rout
                 z[br_idx] = 0.0
 
+            elif n_type in ("nmos", "pmos"):
+                # Small-signal gm/gds at the DC operating point
+                self._stamp_mos(A, None, node, x_op)
+
+            elif n_type in ("bjt_npn", "bjt_pnp"):
+                self._stamp_bjt(A, None, node, x_op)
+
             elif n_type == "digital_interface_out":
                 # A driven rail is an AC ground
                 br_idx = volt_map[n_id]
@@ -772,6 +969,20 @@ class ContinuousSolver:
                 v_out = net_voltage(pins, "out")
                 i_out = float(x[volt_map[n_id]])
                 report[n_id] = {"v": v_out, "i": i_out, "p": v_out * i_out}
+            elif n_type in ("nmos", "pmos"):
+                ss = self._mos_small_signal(node, x)
+                report[n_id] = {
+                    "vgs": ss["vgs"], "vds": ss["vds"], "i": ss["i_d"],
+                    "gm": ss["gm"], "p": ss["vds"] * ss["i_d"]
+                }
+            elif n_type in ("bjt_npn", "bjt_pnp"):
+                ss = self._bjt_small_signal(node, x)
+                i_c, i_b, _ = ss["i_terms"]
+                report[n_id] = {
+                    "vbe": ss["vbe"], "vce": ss["vce"],
+                    "ic": i_c, "ib": i_b,
+                    "p": ss["vce"] * i_c
+                }
 
         return report
 
