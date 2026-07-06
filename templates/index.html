@@ -248,6 +248,7 @@
                     <select id="sim-mode" class="bg-gray-950 text-gray-300 text-xs px-2 py-1 rounded border border-gray-800 outline-none">
                         <option value="dc">DC Bias Operating Pt</option>
                         <option value="transient" selected>Transient Step (Time)</option>
+                        <option value="dc_sweep">DC Param Sweep</option>
                         <option value="ac">AC Sweep (Bode)</option>
                         <option value="mixed">Mixed Co-Simulation</option>
                     </select>
@@ -255,6 +256,19 @@
                         run solver
                     </button>
                 </div>
+            </div>
+
+            <!-- DC Sweep parameter controls (visible only in dc_sweep mode) -->
+            <div id="sweep-controls" style="display: none;" class="h-9 bg-gray-900/40 border-b border-gray-800/60 items-center gap-1.5 px-4">
+                <span class="text-[9px] text-gray-500 uppercase font-bold">sweep</span>
+                <input id="sweep-component" value="V1" title="Component ID" class="w-12 bg-gray-950 border border-gray-800 rounded px-1.5 py-0.5 text-[10px] text-gray-200 code-font outline-none focus:border-cyan-500/50">
+                <input id="sweep-param" value="V" title="Parameter" class="w-10 bg-gray-950 border border-gray-800 rounded px-1.5 py-0.5 text-[10px] text-gray-200 code-font outline-none focus:border-cyan-500/50">
+                <span class="text-[9px] text-gray-500">from</span>
+                <input id="sweep-start" value="0" title="Start" class="w-12 bg-gray-950 border border-gray-800 rounded px-1.5 py-0.5 text-[10px] text-gray-200 code-font outline-none focus:border-cyan-500/50">
+                <span class="text-[9px] text-gray-500">to</span>
+                <input id="sweep-stop" value="10" title="Stop" class="w-12 bg-gray-950 border border-gray-800 rounded px-1.5 py-0.5 text-[10px] text-gray-200 code-font outline-none focus:border-cyan-500/50">
+                <span class="text-[9px] text-gray-500">pts</span>
+                <input id="sweep-points" value="50" title="Points" class="w-11 bg-gray-950 border border-gray-800 rounded px-1.5 py-0.5 text-[10px] text-gray-200 code-font outline-none focus:border-cyan-500/50">
             </div>
 
             <!-- Plot Board Space -->

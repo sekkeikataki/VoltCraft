@@ -191,6 +191,55 @@ def test_dc_operating_point_report():
     assert stats["condition_estimate"] > 1.0
 
 
+def test_api_dc_sweep():
+    path = os.path.join(SCHEMATICS_DIR, AC_TEST_FILE)
+    graph = {
+        "schema_version": "1.0.0",
+        "metadata": {"name": "Sweep Test", "created_utc": "2026-05-23T20:38:00Z", "author_agent": "T"},
+        "nodes": [
+            {"id": "V1", "type": "voltage_source", "params": {"V": 10.0},
+             "pos": {"x": 100, "y": 100}, "rot": 0, "pins": {"a": "n1", "b": "n0"}},
+            {"id": "R1", "type": "resistor", "params": {"R": 1000.0},
+             "pos": {"x": 200, "y": 100}, "rot": 0, "pins": {"a": "n1", "b": "n2"}},
+            {"id": "R2", "type": "resistor", "params": {"R": 1000.0},
+             "pos": {"x": 300, "y": 100}, "rot": 0, "pins": {"a": "n2", "b": "n0"}}
+        ],
+        "edges": [],
+        "nets": ["n0", "n1", "n2"]
+    }
+    assert client.post("/api/agent/action", json={
+        "action": "save_schematic", "params": {"path": path, "graph": graph}
+    }).json()["status"] == "ok"
+    assert client.post("/api/agent/action", json={
+        "action": "load_schematic", "params": {"path": path}
+    }).json()["status"] == "ok"
+
+    r = client.post("/api/agent/action", json={
+        "action": "run_simulation",
+        "params": {"path": path, "mode": "dc_sweep",
+                   "params": {"component": "V1", "param": "V", "start": 0.0, "stop": 10.0, "points": 5}}
+    })
+    body = r.json()
+    assert body["status"] == "ok"
+    data = body["data"]
+    assert data["values"] == [0.0, 2.5, 5.0, 7.5, 10.0]
+    idx = data["cmap"]["n2"]
+    assert data["waveforms"][idx] == pytest.approx([0.0, 1.25, 2.5, 3.75, 5.0], abs=1e-6)
+    assert data["stats"]["analysis"] == "dc_sweep"
+
+    # The live graph keeps its original source value
+    live = active_schematics[path]
+    v1 = next(n for n in live["nodes"] if n["id"] == "V1")
+    assert v1["params"]["V"] == 10.0
+
+    # Missing sweep target is a clean client error
+    r = client.post("/api/agent/action", json={
+        "action": "run_simulation",
+        "params": {"path": path, "mode": "dc_sweep", "params": {"param": "V"}}
+    })
+    assert r.status_code == 400
+
+
 def test_api_update_params():
     path = os.path.join(SCHEMATICS_DIR, AC_TEST_FILE)
     r = client.post("/api/agent/action", json={"action": "load_schematic", "params": {"path": path}})

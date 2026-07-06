@@ -743,6 +743,59 @@ class ContinuousSolver:
 
         return results, time_points, cmap
 
+    def solve_dc_sweep(self, component_id: str, param_name: str, start: float, stop: float,
+                       points: int = 25) -> Tuple[List[float], np.ndarray, Dict[str, int]]:
+        """
+        Sweeps one component parameter across a linear range and computes the
+        DC operating point at each value (SPICE '.dc' analysis). The swept
+        parameter is restored afterwards. Returns (values, results, cmap)
+        where results is a (size x points) matrix of operating points.
+        """
+        points = int(points)
+        if points < 2:
+            raise ValueError(f"DC sweep needs at least 2 points, got {points}")
+
+        node = next((n for n in self.nodes if n["id"] == component_id), None)
+        if node is None:
+            raise ValueError(f"Component '{component_id}' not found for DC sweep")
+
+        params = node.setdefault("params", {})
+        had_param = param_name in params
+        original = params.get(param_name)
+
+        values = [float(v) for v in np.linspace(start, stop, points)]
+        _, net_map, volt_comps = self._get_nets_and_mappings()
+        size = len(net_map) + len(volt_comps)
+        results = np.zeros((size, points))
+
+        cmap: Dict[str, int] = {}
+        total_iterations = 0
+        all_converged = True
+        try:
+            for k, value in enumerate(values):
+                params[param_name] = value
+                x, cmap = self.solve_dc()
+                results[:, k] = x
+                total_iterations += self.last_solve_stats["newton_iterations"]
+                all_converged = all_converged and self.last_solve_stats["converged"]
+        finally:
+            if had_param:
+                params[param_name] = original
+            else:
+                params.pop(param_name, None)
+
+        self.last_solve_stats = {
+            "analysis": "dc_sweep",
+            "matrix_size": size,
+            "points": points,
+            "component": component_id,
+            "param": param_name,
+            "newton_iterations": total_iterations,
+            "converged": all_converged
+        }
+
+        return values, results, cmap
+
     def _assemble_ac(self, omega: float, x_op: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Assembles the complex-valued small-signal MNA system at angular

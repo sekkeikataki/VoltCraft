@@ -65,6 +65,9 @@ Sources carrying an `ac_mag` parameter (with optional `ac_phase` in degrees) dri
 ### Stimulus Waveforms
 Voltage sources accept a `wave` parameter — `sine` (default), `square`, `triangle`, or `sawtooth` — plus `freq`, `phase` (radians), `offset`, and `duty` (square only). Periodic waves swing $\pm V$ around the offset; a source without a positive `freq` is a DC level.
 
+### DC Parameter Sweeps
+Any component parameter can be swept linearly (`mode="dc_sweep"`, or the *DC Param Sweep* mode in the UI): the solver computes the full DC operating point per value and returns the transfer curves — e.g. voltage-divider ramps or MOSFET $I_D$–$V_{GS}$ characteristics. The swept parameter is restored after the run.
+
 ### Solver Telemetry & Operating-Point Report
 Every DC, transient, and AC run returns a `stats` block (matrix size, Newton-Raphson iteration counts, convergence flag, worst residual, condition estimate) that drives the live diagnostics panel. DC runs additionally return an `operating_point` report with per-component voltage, current, and power (branch currents follow the MNA convention: a delivering source reports negative current). Voltage-defining components left with every terminal on ground are rejected by name instead of surfacing a bare singular-matrix error.
 
@@ -134,6 +137,12 @@ Vanilla HTML5, precompiled Tailwind CSS (`tailwind.min.css`), and pure ES2022 as
 Ensure your package manager contains Python and the authorized dependencies:
 ```bash
 sudo pacman -S --needed python python-fastapi uvicorn python-numpy python-httpx python-beautifulsoup4 python-pytest
+```
+
+On any other platform, install from the pinned requirements instead:
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -r voltcraft/requirements.txt
 ```
 
 ### Verification & Compilation Run

@@ -61,6 +61,8 @@ class VoltCraftSimulatorView {
             this.plotDC(data);
         } else if (mode === "transient") {
             this.plotTransient(data);
+        } else if (mode === "dc_sweep") {
+            this.plotSweep(data);
         } else if (mode === "ac") {
             this.plotAC(data);
         } else if (mode === "mixed") {
@@ -238,12 +240,19 @@ class VoltCraftSimulatorView {
     }
 
     plotTransient(data) {
+        this.plotLinearCurves(data.times, data.waveforms, data.cmap, "Time (s)");
+    }
+
+    plotSweep(data) {
+        // DC transfer curves: x-axis is the swept parameter value
+        const stats = data.stats || {};
+        const xLabel = stats.component ? `${stats.component}.${stats.param}` : "Sweep value";
+        this.plotLinearCurves(data.values, data.waveforms, data.cmap, xLabel);
+    }
+
+    plotLinearCurves(times, waveforms, cmap, xLabel) {
         const w = this.analogSvg.clientWidth || 380;
         const h = this.analogSvg.clientHeight || 200;
-
-        const times = data.times;
-        const waveforms = data.waveforms;
-        const cmap = data.cmap;
 
         if (!times || times.length === 0) return;
 
@@ -269,7 +278,7 @@ class VoltCraftSimulatorView {
         if (vMax === -99999.0) vMax = 5.0;
         if (vMin === vMax) { vMin -= 1.0; vMax += 1.0; }
 
-        this.drawGrid(this.analogSvg, w, h, tMin, tMax, vMin, vMax, "Time (s)", "Voltage (V)");
+        this.drawGrid(this.analogSvg, w, h, tMin, tMax, vMin, vMax, xLabel, "Voltage (V)");
 
         // Plot each active probe curve (nets and branch currents)
         let colorIdx = 0;

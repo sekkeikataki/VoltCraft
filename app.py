@@ -522,6 +522,22 @@ async def action_run_simulation(agent_id: str, params: Dict[str, Any]) -> Dict[s
             "cmap": cmap,
             "stats": analog.last_solve_stats
         }
+    elif mode == "dc_sweep":
+        component = sim_params.get("component")
+        param = sim_params.get("param")
+        if not component or not param:
+            raise ValueError("Missing parameters: component, param")
+        start = float(sim_params.get("start", 0.0))
+        stop = float(sim_params.get("stop", 10.0))
+        points = int(sim_params.get("points", 25))
+
+        values, results_mat, cmap = analog.solve_dc_sweep(component, param, start, stop, points)
+        results = {
+            "values": values,
+            "waveforms": results_mat.tolist(),
+            "cmap": cmap,
+            "stats": analog.last_solve_stats
+        }
     elif mode == "ac":
         f_start = float(sim_params.get("f_start", 1.0))
         f_stop = float(sim_params.get("f_stop", 1e6))

@@ -148,6 +148,52 @@ def test_bjt_current_gain_tracks_beta():
         assert report["Q1"]["ic"] / report["Q1"]["ib"] == pytest.approx(beta, rel=0.05)
 
 
+def test_dc_sweep_divider_is_linear():
+    # Sweep the divider source 0..10V: the midpoint tracks V/2 exactly
+    nodes = [
+        {"id": "V1", "type": "voltage_source", "params": {"V": 10.0}, "pins": {"a": "n1", "b": "n0"}},
+        {"id": "R1", "type": "resistor", "params": {"R": 1000.0}, "pins": {"a": "n1", "b": "n2"}},
+        {"id": "R2", "type": "resistor", "params": {"R": 1000.0}, "pins": {"a": "n2", "b": "n0"}}
+    ]
+    solver = ContinuousSolver(nodes, [])
+    values, results, cmap = solver.solve_dc_sweep("V1", "V", 0.0, 10.0, 11)
+
+    assert values == pytest.approx(list(np.linspace(0, 10, 11)))
+    for k, v in enumerate(values):
+        assert results[cmap["n2"]][k] == pytest.approx(v / 2.0, abs=1e-6)
+
+    # The swept parameter must be restored afterwards
+    assert nodes[0]["params"]["V"] == 10.0
+    assert solver.last_solve_stats["analysis"] == "dc_sweep"
+    assert solver.last_solve_stats["converged"] is True
+
+
+def test_dc_sweep_nmos_transfer_curve():
+    # Sweep the gate of the common-source stage through cutoff, saturation,
+    # and triode; check hand-solved drain voltages at three anchor points
+    solver = ContinuousSolver(nmos_common_source(0.0), [])
+    values, results, cmap = solver.solve_dc_sweep("VG", "V", 0.0, 5.0, 51)
+
+    idx_d = cmap["n_d"]
+
+    def vd_at(vg):
+        k = min(range(len(values)), key=lambda i: abs(values[i] - vg))
+        return results[idx_d][k]
+
+    assert vd_at(0.5) == pytest.approx(10.0, abs=1e-2)   # cutoff
+    assert vd_at(2.0) == pytest.approx(5.0, abs=1e-3)    # saturation, Id=1mA
+    vds_triode = (41.0 - math.sqrt(41.0 ** 2 - 200.0)) / 10.0
+    assert vd_at(5.0) == pytest.approx(vds_triode, abs=1e-3)
+
+
+def test_dc_sweep_validation():
+    solver = ContinuousSolver(nmos_common_source(2.0), [])
+    with pytest.raises(ValueError, match="at least 2 points"):
+        solver.solve_dc_sweep("VG", "V", 0.0, 5.0, 1)
+    with pytest.raises(ValueError, match="ZZ9"):
+        solver.solve_dc_sweep("ZZ9", "V", 0.0, 5.0, 5)
+
+
 def test_mosfet_transient_inverter_switches():
     # NMOS inverter driven by a 1kHz square wave: output must swing
     # between Vdd (input low, cutoff) and near-ground (input high, triode)

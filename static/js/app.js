@@ -32,6 +32,16 @@ class VoltCraftApp {
         document.getElementById("btn-save").addEventListener("click", () => this.saveSchematic());
         document.getElementById("btn-simulate").addEventListener("click", () => this.runSimulation());
 
+        // Show the sweep parameter row only in dc_sweep mode
+        document.getElementById("sim-mode").addEventListener("change", (e) => {
+            const sweepRow = document.getElementById("sweep-controls");
+            if (sweepRow) {
+                sweepRow.style.display = e.target.value === "dc_sweep" ? "flex" : "none";
+            }
+        });
+
+        this.bindKeyboardShortcuts();
+
         // Load Default reference circuit
         await this.loadSchematic(this.activeSchematicPath);
     }
@@ -83,6 +93,14 @@ class VoltCraftApp {
         let params;
         if (mode === "ac") {
             params = { f_start: 1.0, f_stop: 1e6, points_per_decade: 20 };
+        } else if (mode === "dc_sweep") {
+            params = {
+                component: document.getElementById("sweep-component").value.trim(),
+                param: document.getElementById("sweep-param").value.trim(),
+                start: parseFloat(document.getElementById("sweep-start").value),
+                stop: parseFloat(document.getElementById("sweep-stop").value),
+                points: parseInt(document.getElementById("sweep-points").value, 10)
+            };
         } else {
             params = {
                 t_stop: mode === "dc" ? 0.0 : mode === "mixed" ? 0.001 : 0.05,
@@ -126,6 +144,48 @@ class VoltCraftApp {
         } finally {
             btn.disabled = false;
             btn.textContent = "RUN SOLVER";
+        }
+    }
+
+    bindKeyboardShortcuts() {
+        document.addEventListener("keydown", (e) => {
+            const tag = e.target.tagName;
+            if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+            const key = e.key.toLowerCase();
+            if ((e.ctrlKey || e.metaKey) && key === "z" && !e.shiftKey) {
+                e.preventDefault();
+                this.undo();
+            } else if ((e.ctrlKey || e.metaKey) && (key === "y" || (key === "z" && e.shiftKey))) {
+                e.preventDefault();
+                this.redo();
+            } else if ((e.key === "Delete" || e.key === "Backspace") && this.designer && this.designer.selectedNodeId) {
+                e.preventDefault();
+                this.deleteSelectedComponent();
+            } else if (e.key === "Escape" && this.designer) {
+                this.designer.placingType = null;
+                this.designer.clearSelection();
+                this.designer.render(this.graph);
+            }
+        });
+    }
+
+    async deleteSelectedComponent() {
+        const nodeId = this.designer.selectedNodeId;
+        try {
+            const res = await this.postAction("delete_node", {
+                path: this.activeSchematicPath,
+                id: nodeId
+            });
+            if (res.status === "ok") {
+                this.designer.clearSelection();
+                this.logJournal("delete_node", { id: nodeId }, res.journal_id);
+                // WebSocket broadcast refreshes the canvas
+            } else {
+                alert(`Delete failed: ${res.error.message}`);
+            }
+        } catch (err) {
+            console.error("[VOLTCRAFT] Error deleting component: ", err);
         }
     }
 
@@ -318,6 +378,8 @@ class VoltCraftApp {
                 stepsEl.textContent = `${stats.timesteps} steps / ${stats.newton_iterations} NR`;
             } else if (stats.analysis === "ac") {
                 stepsEl.textContent = `${stats.points} freq pts`;
+            } else if (stats.analysis === "dc_sweep") {
+                stepsEl.textContent = `${stats.points} sweep pts${stats.converged ? "" : " (DIVERGED)"}`;
             }
             return;
         }
