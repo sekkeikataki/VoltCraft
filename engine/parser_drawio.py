@@ -42,7 +42,11 @@ class DrawioCodec:
             "nmos": ["gate", "drain", "source"],
             "pmos": ["gate", "drain", "source"],
             "bjt_npn": ["base", "collector", "emitter"],
-            "bjt_pnp": ["base", "collector", "emitter"]
+            "bjt_pnp": ["base", "collector", "emitter"],
+            "vcvs": ["p", "n", "cp", "cn"],
+            "vccs": ["p", "n", "cp", "cn"],
+            "cccs": ["p", "n"],
+            "ccvs": ["p", "n"]
         }
         return mapping.get(node_type, ["a", "b"])
 
@@ -84,6 +88,11 @@ class DrawioCodec:
             if rel_x <= 0.1:
                 return pins[0]
             return pins[1] if rel_y < 0.5 else pins[2]
+        elif node_type in ("vcvs", "vccs"):
+            # Control pair on the left, output pair on the right
+            if rel_x <= 0.1:
+                return "cp" if rel_y < 0.5 else "cn"
+            return "p" if rel_y < 0.5 else "n"
         elif len(pins) == 2:
             # Typically terminal 'a' is left/top, 'b' is right/bottom
             if rel_x <= 0.3 or rel_y <= 0.3:

@@ -55,6 +55,11 @@ VoltCraft supports energy-storing transient integration utilizing two companion 
 
 Both devices are linearized per Newton-Raphson iteration into $g_m$/$g_{ds}$ companion stamps shared by the DC, transient, and AC analyses, and both report bias quantities ($V_{GS}$, $I_D$, $V_{BE}$, $I_C$, ...) in the DC operating-point output.
 
+### Dependent Sources & Device Capacitances
+All four SPICE controlled sources are supported with the standard MNA stamps and work in every analysis: **VCVS** (`vcvs`, E: $v = k\,v_c$), **VCCS** (`vccs`, G: $i = g_m v_c$), **CCCS** (`cccs`, F: $i = k\,i_{ctrl}$), and **CCVS** (`ccvs`, H: $v = r\,i_{ctrl}$). Current-controlled elements name their controlling branch via `params.control` (any voltage-defining component), using the SPICE $I(V)$ branch-current convention.
+
+Devices also carry first-order parasitic capacitances — diode junction `Cj0` and MOSFET `Cgs`/`Cgd` — stamped through the same companion machinery as explicit capacitors in transient runs and as $j\omega C$ admittances in AC, producing the physical frequency poles (e.g. the $1/2\pi R_G C_{GS}$ input pole of a common-source stage) and gate-charging delays.
+
 ### AC Small-Signal Frequency Analysis (Bode)
 VoltCraft linearizes the circuit at its DC operating point (diodes reduce to their small-signal conductance $g_d$), then solves the complex-valued MNA system per frequency over a logarithmic sweep:
 

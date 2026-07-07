@@ -332,7 +332,11 @@ ID_PREFIXES = {
     "pmos": "M",
     "bjt_npn": "Q",
     "bjt_pnp": "Q",
-    "subcircuit": "X"
+    "subcircuit": "X",
+    "vcvs": "E",
+    "vccs": "G",
+    "cccs": "F",
+    "ccvs": "H"
 }
 
 TWO_TERMINAL_TYPES = ("resistor", "capacitor", "inductor", "voltage_source", "current_source")
@@ -345,7 +349,11 @@ DEFAULT_PIN_LAYOUTS = {
     "nmos": ("gate", "drain", "source"),
     "pmos": ("gate", "drain", "source"),
     "bjt_npn": ("base", "collector", "emitter"),
-    "bjt_pnp": ("base", "collector", "emitter")
+    "bjt_pnp": ("base", "collector", "emitter"),
+    "vcvs": ("p", "n", "cp", "cn"),
+    "vccs": ("p", "n", "cp", "cn"),
+    "cccs": ("p", "n"),
+    "ccvs": ("p", "n")
 }
 
 def default_pins_for(comp_type: str) -> Dict[str, str]:

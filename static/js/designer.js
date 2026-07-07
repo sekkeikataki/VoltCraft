@@ -32,7 +32,11 @@ class VoltCraftDesigner {
             pmos: "M 0 20 L 40 20 M 43 20 A 3 3 0 1 1 49 20 A 3 3 0 1 1 43 20 M 52 10 L 52 30 M 58 8 L 58 32 M 58 12 L 72 12 L 72 5 L 100 5 M 58 28 L 72 28 L 72 35 L 100 35",
             bjt_npn: "M 0 20 L 45 20 M 45 8 L 45 32 M 45 15 L 70 6 L 70 5 L 100 5 M 45 25 L 70 34 L 70 35 L 100 35 M 62 33 L 70 34 L 64 27",
             bjt_pnp: "M 0 20 L 45 20 M 45 8 L 45 32 M 45 15 L 70 6 L 70 5 L 100 5 M 45 25 L 70 34 L 70 35 L 100 35 M 53 25 L 45 25 L 51 31",
-            subcircuit: "M 0 20 L 25 20 M 75 20 L 100 20 M 25 5 L 75 5 L 75 35 L 25 35 Z M 33 13 L 42 22 M 42 13 L 33 22 M 55 25 L 67 25 M 55 29 L 67 29"
+            subcircuit: "M 0 20 L 25 20 M 75 20 L 100 20 M 25 5 L 75 5 L 75 35 L 25 35 Z M 33 13 L 42 22 M 42 13 L 33 22 M 55 25 L 67 25 M 55 29 L 67 29",
+            vcvs: "M 0 10 L 30 10 M 0 30 L 30 30 M 50 5 L 65 20 L 50 35 L 35 20 Z M 46 16 L 54 16 M 50 12 L 50 20 M 46 26 L 54 26 M 65 20 L 100 10 M 65 20 L 100 30",
+            vccs: "M 0 10 L 30 10 M 0 30 L 30 30 M 50 5 L 65 20 L 50 35 L 35 20 Z M 50 13 L 50 27 M 47 22 L 50 27 L 53 22 M 65 20 L 100 10 M 65 20 L 100 30",
+            cccs: "M 0 20 L 35 20 M 50 5 L 65 20 L 50 35 L 35 20 Z M 50 13 L 50 27 M 47 22 L 50 27 L 53 22 M 65 20 L 100 20",
+            ccvs: "M 0 20 L 35 20 M 50 5 L 65 20 L 50 35 L 35 20 Z M 46 16 L 54 16 M 50 12 L 50 20 M 46 26 L 54 26 M 65 20 L 100 20"
         };
 
         // Suggested editable parameters per component type for the inspector
@@ -49,7 +53,11 @@ class VoltCraftDesigner {
             bjt_npn: { Is: 1e-15, beta_f: 100, beta_r: 1 },
             bjt_pnp: { Is: 1e-15, beta_f: 100, beta_r: 1 },
             analog_comparator: { threshold: 2.5 },
-            digital_interface_out: { V: 5, delay: 0 }
+            digital_interface_out: { V: 5, delay: 0 },
+            vcvs: { gain: 1 },
+            vccs: { gm: 1e-3 },
+            cccs: { gain: 1, control: "V1" },
+            ccvs: { r: 1000, control: "V1" }
         };
         this.selectedNodeId = null;
 
@@ -312,6 +320,14 @@ class VoltCraftDesigner {
                     if (pinName === "base") { pinX = 0; pinY = 20; }
                     else if (pinName === "collector") { pinX = 100; pinY = 5; }
                     else if (pinName === "emitter") { pinX = 100; pinY = 35; }
+                } else if (node.type === "vcvs" || node.type === "vccs") {
+                    if (pinName === "cp") { pinX = 0; pinY = 10; }
+                    else if (pinName === "cn") { pinX = 0; pinY = 30; }
+                    else if (pinName === "p") { pinX = 100; pinY = 10; }
+                    else if (pinName === "n") { pinX = 100; pinY = 30; }
+                } else if (node.type === "cccs" || node.type === "ccvs") {
+                    if (pinName === "p") { pinX = 100; pinY = 20; }
+                    else if (pinName === "n") { pinX = 0; pinY = 20; }
                 } else if (node.type === "analog_comparator") {
                     if (pinName === "analog_in") { pinX = 0; pinY = 20; }
                     else if (pinName === "digital_out") { pinX = 100; pinY = 20; }

@@ -145,7 +145,7 @@ class ContinuousSolver:
         # Find voltage-defining components
         voltage_components = []
         for node in self.nodes:
-            if node["type"] in ("voltage_source", "opamp", "digital_interface_out"):
+            if node["type"] in ("voltage_source", "opamp", "digital_interface_out", "vcvs", "ccvs"):
                 voltage_components.append(node)
 
         self._mappings_cache = (nets_list, net_map, voltage_components)
@@ -346,6 +346,103 @@ class ContinuousSolver:
                 i_const = ss["i_terms"][row] - sum(G[row][col] * volts[col] for col in range(3))
                 z[idxs[row]] -= i_const
 
+    def _stamp_controlled_source(self, A: np.ndarray, node: Dict[str, Any],
+                                 net_map: Dict[str, int], volt_map: Dict[str, int]) -> None:
+        """
+        Stamps the four SPICE dependent sources with the standard MNA
+        entries. All are linear, so the same stamps serve DC, transient,
+        and AC assembly. Conventions:
+
+        - vcvs (E): v(p) - v(n) = gain * (v(cp) - v(cn));  branch element
+        - vccs (G): current gain_g * (v(cp) - v(cn)) flows p -> n
+        - cccs (F): current gain * i(control) flows p -> n
+        - ccvs (H): v(p) - v(n) = r * i(control);          branch element
+
+        For F and H, params.control names a voltage-defining component
+        whose MNA branch current (SPICE I(V) convention) is the control.
+        """
+        n_type = node["type"]
+        n_id = node["id"]
+        pins = node.get("pins", {})
+        params = node.get("params", {})
+
+        ip = net_map.get(pins.get("p", "n0"))
+        in_ = net_map.get(pins.get("n", "n0"))
+
+        def control_branch() -> int:
+            control = params.get("control")
+            if not control or control not in volt_map:
+                raise ValueError(
+                    f"'{n_id}' ({n_type}) requires params.control naming a "
+                    f"voltage-defining component (voltage_source, opamp, vcvs, ccvs)"
+                )
+            return volt_map[control]
+
+        if n_type == "vccs":
+            gm = float(params.get("gm", 1e-3))
+            icp = net_map.get(pins.get("cp", "n0"))
+            icn = net_map.get(pins.get("cn", "n0"))
+            for row, sign_r in ((ip, 1.0), (in_, -1.0)):
+                if row is None:
+                    continue
+                if icp is not None:
+                    A[row, icp] += sign_r * gm
+                if icn is not None:
+                    A[row, icn] -= sign_r * gm
+
+        elif n_type == "vcvs":
+            gain = float(params.get("gain", 1.0))
+            icp = net_map.get(pins.get("cp", "n0"))
+            icn = net_map.get(pins.get("cn", "n0"))
+            br = volt_map[n_id]
+            _require_wired_branch(n_id, n_type, ip, in_)
+            _stamp_voltage_branch(A, ip, in_, br)
+            if icp is not None:
+                A[br, icp] -= gain
+            if icn is not None:
+                A[br, icn] += gain
+
+        elif n_type == "cccs":
+            gain = float(params.get("gain", 1.0))
+            br_ctrl = control_branch()
+            if ip is not None:
+                A[ip, br_ctrl] += gain
+            if in_ is not None:
+                A[in_, br_ctrl] -= gain
+
+        elif n_type == "ccvs":
+            r_val = float(params.get("r", 1.0))
+            br = volt_map[n_id]
+            br_ctrl = control_branch()
+            _require_wired_branch(n_id, n_type, ip, in_)
+            _stamp_voltage_branch(A, ip, in_, br)
+            A[br, br_ctrl] -= r_val
+
+    def _capacitive_elements(self, node: Dict[str, Any]):
+        """
+        Yields (state_key, pin_a, pin_b, capacitance) for every capacitance
+        a component contributes: explicit capacitors plus implicit device
+        capacitances (diode junction Cj0, MOSFET gate Cgs/Cgd). The state
+        key namespaces the companion history entries.
+        """
+        n_type = node["type"]
+        n_id = node["id"]
+        params = node.get("params", {})
+
+        if n_type == "capacitor":
+            yield n_id, "a", "b", _positive_param(params, "C", 1e-6, n_id)
+        elif n_type == "diode":
+            cj0 = float(params.get("Cj0", 0.0))
+            if cj0 > 0.0:
+                yield f"{n_id}_cj", "anode", "cathode", cj0
+        elif n_type in ("nmos", "pmos"):
+            cgs = float(params.get("Cgs", 0.0))
+            if cgs > 0.0:
+                yield f"{n_id}_cgs", "gate", "source", cgs
+            cgd = float(params.get("Cgd", 0.0))
+            if cgd > 0.0:
+                yield f"{n_id}_cgd", "gate", "drain", cgd
+
     def assemble_mna(self, t: float, dt: float, history: Dict[str, Any], prev_x: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray, Dict[str, int]]:
         """
         Assembles the MNA system A * x = z at time t with timestep dt.
@@ -427,28 +524,6 @@ class ContinuousSolver:
                 _stamp_conductance(A, ia, ic, g_d)
                 _stamp_current_injection(z, ia, ic, i_eq)
 
-            elif n_type == "capacitor":
-                c_val = _positive_param(params, "C", 1e-6, n_id)
-                ia = pin_index(pins, "a")
-                ib = pin_index(pins, "b")
-
-                # Retrieve history values
-                prev_v = float(history.get(f"{n_id}_v", 0.0))
-                prev_i = float(history.get(f"{n_id}_i", 0.0))
-
-                method = history.get("integration_method", "backward_euler")
-                if method == "trapezoidal":
-                    g_eq = 2.0 * c_val / dt
-                    i_eq = g_eq * prev_v + prev_i
-                else:
-                    # Backward Euler
-                    g_eq = c_val / dt
-                    i_eq = g_eq * prev_v
-
-                # Resistor + Current source parallel companion stamp
-                _stamp_conductance(A, ia, ib, g_eq)
-                _stamp_current_injection(z, ia, ib, i_eq)
-
             elif n_type == "inductor":
                 l_val = _positive_param(params, "L", 1e-3, n_id)
                 ia = pin_index(pins, "a")
@@ -497,6 +572,9 @@ class ContinuousSolver:
             elif n_type in ("bjt_npn", "bjt_pnp"):
                 self._stamp_bjt(A, z, node, prev_x)
 
+            elif n_type in ("vcvs", "vccs", "cccs", "ccvs"):
+                self._stamp_controlled_source(A, node, net_map, volt_map)
+
             elif n_type == "digital_interface_out":
                 v_val = float(params.get("V", 0.0))
                 br_idx = volt_map[n_id]
@@ -505,6 +583,27 @@ class ContinuousSolver:
                 _require_wired_branch(n_id, n_type, ia, None)
                 _stamp_voltage_branch(A, ia, None, br_idx)
                 z[br_idx] = v_val
+
+            # Companion stamps for explicit capacitors and implicit device
+            # capacitances (diode Cj0, MOSFET Cgs/Cgd)
+            for state_key, pa, pb, c_val in self._capacitive_elements(node):
+                ia = pin_index(pins, pa)
+                ib = pin_index(pins, pb)
+                prev_v = float(history.get(f"{state_key}_v", 0.0))
+                prev_i = float(history.get(f"{state_key}_i", 0.0))
+
+                method = history.get("integration_method", "backward_euler")
+                if method == "trapezoidal":
+                    g_eq = 2.0 * c_val / dt
+                    i_eq = g_eq * prev_v + prev_i
+                else:
+                    # Backward Euler
+                    g_eq = c_val / dt
+                    i_eq = g_eq * prev_v
+
+                # Resistor + Current source parallel companion stamp
+                _stamp_conductance(A, ia, ib, g_eq)
+                _stamp_current_injection(z, ia, ib, i_eq)
 
         # Construct comprehensive index mapping log
         complete_map = {}
@@ -516,57 +615,57 @@ class ContinuousSolver:
         return A, z, complete_map
 
     def init_energy_storage_history(self, x: np.ndarray, history: Dict[str, Any]) -> None:
-        """Seeds capacitor/inductor companion state from an operating point x."""
+        """Seeds capacitive/inductive companion state from an operating point x."""
         _, net_map, _ = self._get_nets_and_mappings()
-        for node in self.nodes:
-            n_type = node["type"]
-            if n_type not in ("capacitor", "inductor"):
-                continue
-            n_id = node["id"]
-            pins = node.get("pins", {})
-            ia = net_map.get(pins.get("a", "n0"))
-            ib = net_map.get(pins.get("b", "n0"))
 
-            if n_type == "capacitor":
-                v_cap = (x[ia] if ia is not None else 0.0) - (x[ib] if ib is not None else 0.0)
-                history[f"{n_id}_v"] = v_cap
-                history[f"{n_id}_i"] = 0.0  # Initial current is 0
-            else:
-                history[f"{n_id}_v"] = 0.0
-                history[f"{n_id}_i"] = 0.0
+        def v_across(pins, pa, pb):
+            ia = net_map.get(pins.get(pa, "n0"))
+            ib = net_map.get(pins.get(pb, "n0"))
+            return (x[ia] if ia is not None else 0.0) - (x[ib] if ib is not None else 0.0)
+
+        for node in self.nodes:
+            pins = node.get("pins", {})
+            for state_key, pa, pb, _c in self._capacitive_elements(node):
+                history[f"{state_key}_v"] = v_across(pins, pa, pb)
+                history[f"{state_key}_i"] = 0.0  # Initial current is 0
+            if node["type"] == "inductor":
+                history[f"{node['id']}_v"] = 0.0
+                history[f"{node['id']}_i"] = 0.0
 
     def update_energy_storage_history(self, x: np.ndarray, dt: float, history: Dict[str, Any],
                                       method: str = "backward_euler") -> None:
-        """Advances capacitor/inductor companion state after a solved timestep."""
+        """Advances capacitive/inductive companion state after a solved timestep."""
         _, net_map, _ = self._get_nets_and_mappings()
+
+        def v_across(pins, pa, pb):
+            ia = net_map.get(pins.get(pa, "n0"))
+            ib = net_map.get(pins.get(pb, "n0"))
+            return (x[ia] if ia is not None else 0.0) - (x[ib] if ib is not None else 0.0)
+
         for node in self.nodes:
-            n_type = node["type"]
-            if n_type not in ("capacitor", "inductor"):
-                continue
-            n_id = node["id"]
             pins = node.get("pins", {})
-            params = node.get("params", {})
-            ia = net_map.get(pins.get("a", "n0"))
-            ib = net_map.get(pins.get("b", "n0"))
 
-            v_new = (x[ia] if ia is not None else 0.0) - (x[ib] if ib is not None else 0.0)
-            v_old = history[f"{n_id}_v"]
-
-            if n_type == "capacitor":
-                c_val = float(params.get("C", 1e-6))
+            for state_key, pa, pb, c_val in self._capacitive_elements(node):
+                v_new = v_across(pins, pa, pb)
+                v_old = history[f"{state_key}_v"]
                 if method == "trapezoidal":
-                    i_new = (2.0 * c_val / dt) * (v_new - v_old) - history[f"{n_id}_i"]
+                    i_new = (2.0 * c_val / dt) * (v_new - v_old) - history[f"{state_key}_i"]
                 else:
                     i_new = (c_val / dt) * (v_new - v_old)
-            else:
-                l_val = float(params.get("L", 1e-3))
+                history[f"{state_key}_v"] = v_new
+                history[f"{state_key}_i"] = i_new
+
+            if node["type"] == "inductor":
+                n_id = node["id"]
+                l_val = float(node.get("params", {}).get("L", 1e-3))
+                v_new = v_across(pins, "a", "b")
+                v_old = history[f"{n_id}_v"]
                 if method == "trapezoidal":
                     i_new = (dt / (2.0 * l_val)) * (v_new + v_old) + history[f"{n_id}_i"]
                 else:
                     i_new = (dt / l_val) * v_new + history[f"{n_id}_i"]
-
-            history[f"{n_id}_v"] = v_new
-            history[f"{n_id}_i"] = i_new
+                history[f"{n_id}_v"] = v_new
+                history[f"{n_id}_i"] = i_new
 
     def newton_transient_step(self, t: float, dt: float, history: Dict[str, Any], x0: np.ndarray,
                               max_iter: int = 80, tol: float = 1e-6) -> Tuple[np.ndarray, int, float]:
@@ -961,10 +1060,6 @@ class ContinuousSolver:
                 r_val = _positive_param(params, "R", 1000.0, n_id)
                 _stamp_conductance(A, pin_index(pins, "a"), pin_index(pins, "b"), 1.0 / r_val)
 
-            elif n_type == "capacitor":
-                c_val = _positive_param(params, "C", 1e-6, n_id)
-                _stamp_conductance(A, pin_index(pins, "a"), pin_index(pins, "b"), 1j * omega * c_val)
-
             elif n_type == "inductor":
                 l_val = _positive_param(params, "L", 1e-3, n_id)
                 _stamp_conductance(A, pin_index(pins, "a"), pin_index(pins, "b"), 1.0 / (1j * omega * l_val))
@@ -1022,6 +1117,9 @@ class ContinuousSolver:
             elif n_type in ("bjt_npn", "bjt_pnp"):
                 self._stamp_bjt(A, None, node, x_op)
 
+            elif n_type in ("vcvs", "vccs", "cccs", "ccvs"):
+                self._stamp_controlled_source(A, node, net_map, volt_map)
+
             elif n_type == "digital_interface_out":
                 # A driven rail is an AC ground
                 br_idx = volt_map[n_id]
@@ -1029,6 +1127,11 @@ class ContinuousSolver:
                 _require_wired_branch(n_id, n_type, ia, None)
                 _stamp_voltage_branch(A, ia, None, br_idx)
                 z[br_idx] = 0.0
+
+            # jwC admittance for explicit capacitors and implicit device
+            # capacitances (diode Cj0, MOSFET Cgs/Cgd)
+            for _key, pa, pb, c_val in self._capacitive_elements(node):
+                _stamp_conductance(A, pin_index(pins, pa), pin_index(pins, pb), 1j * omega * c_val)
 
         return A, z
 
@@ -1130,6 +1233,20 @@ class ContinuousSolver:
                 v_out = net_voltage(pins, "out")
                 i_out = float(x[volt_map[n_id]])
                 report[n_id] = {"v": v_out, "i": i_out, "p": v_out * i_out}
+            elif n_type in ("vcvs", "ccvs"):
+                v = net_voltage(pins, "p") - net_voltage(pins, "n")
+                i = float(x[volt_map[n_id]])
+                report[n_id] = {"v": v, "i": i, "p": v * i}
+            elif n_type == "vccs":
+                v = net_voltage(pins, "p") - net_voltage(pins, "n")
+                i = float(params.get("gm", 1e-3)) * (net_voltage(pins, "cp") - net_voltage(pins, "cn"))
+                report[n_id] = {"v": v, "i": i, "p": v * i}
+            elif n_type == "cccs":
+                v = net_voltage(pins, "p") - net_voltage(pins, "n")
+                control = params.get("control")
+                i_ctrl = float(x[volt_map[control]]) if control in volt_map else 0.0
+                i = float(params.get("gain", 1.0)) * i_ctrl
+                report[n_id] = {"v": v, "i": i, "p": v * i}
             elif n_type in ("nmos", "pmos"):
                 ss = self._mos_small_signal(node, x)
                 report[n_id] = {
