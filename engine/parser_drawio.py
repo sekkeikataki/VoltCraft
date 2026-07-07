@@ -38,9 +38,41 @@ class DrawioCodec:
             "diode": ["anode", "cathode"],
             "opamp": ["non_inverting", "inverting", "out"],
             "voltage_source": ["a", "b"],
-            "current_source": ["a", "b"]
+            "current_source": ["a", "b"],
+            "nmos": ["gate", "drain", "source"],
+            "pmos": ["gate", "drain", "source"],
+            "bjt_npn": ["base", "collector", "emitter"],
+            "bjt_pnp": ["base", "collector", "emitter"],
+            "vcvs": ["p", "n", "cp", "cn"],
+            "vccs": ["p", "n", "cp", "cn"],
+            "cccs": ["p", "n"],
+            "ccvs": ["p", "n"]
         }
         return mapping.get(node_type, ["a", "b"])
+
+    @staticmethod
+    def _infer_cell_type(cell) -> str:
+        """
+        Resolves a cell's component type from its style 'symbol' entry,
+        falling back to a heuristic on the cell's value label.
+        """
+        style_dict = DrawioCodec._parse_style(cell.attrib.get("style", ""))
+        node_type = style_dict.get("symbol")
+        if node_type:
+            return node_type
+
+        val = cell.attrib.get("value", "").lower()
+        if "resistor" in val or "r" in val:
+            return "resistor"
+        elif "capacitor" in val or "c" in val:
+            return "capacitor"
+        elif "inductor" in val or "l" in val:
+            return "inductor"
+        elif "diode" in val or "d" in val:
+            return "diode"
+        elif "opamp" in val or "u" in val:
+            return "opamp"
+        return "resistor"  # Default
 
     @staticmethod
     def _map_point_to_pin(node_type: str, rel_x: float, rel_y: float) -> str:
@@ -50,6 +82,17 @@ class DrawioCodec:
             if rel_x <= 0.1:
                 return "inverting" if rel_y >= 0.5 else "non_inverting"
             return "out"
+        elif node_type in ("nmos", "pmos", "bjt_npn", "bjt_pnp"):
+            # Control pin on the left; drain/collector upper right,
+            # source/emitter lower right
+            if rel_x <= 0.1:
+                return pins[0]
+            return pins[1] if rel_y < 0.5 else pins[2]
+        elif node_type in ("vcvs", "vccs"):
+            # Control pair on the left, output pair on the right
+            if rel_x <= 0.1:
+                return "cp" if rel_y < 0.5 else "cn"
+            return "p" if rel_y < 0.5 else "n"
         elif len(pins) == 2:
             # Typically terminal 'a' is left/top, 'b' is right/bottom
             if rel_x <= 0.3 or rel_y <= 0.3:
@@ -112,24 +155,9 @@ class DrawioCodec:
 
             style_str = cell.attrib.get("style", "")
             style_dict = DrawioCodec._parse_style(style_str)
-            
+
             # Identify node type
-            node_type = style_dict.get("symbol")
-            if not node_type:
-                # Fallback to value or name
-                val = cell.attrib.get("value", "").lower()
-                if "resistor" in val or "r" in val:
-                    node_type = "resistor"
-                elif "capacitor" in val or "c" in val:
-                    node_type = "capacitor"
-                elif "inductor" in val or "l" in val:
-                    node_type = "inductor"
-                elif "diode" in val or "d" in val:
-                    node_type = "diode"
-                elif "opamp" in val or "u" in val:
-                    node_type = "opamp"
-                else:
-                    node_type = "resistor"  # Default
+            node_type = DrawioCodec._infer_cell_type(cell)
 
             # Extract params from style or defaults
             params = {}
@@ -201,10 +229,10 @@ class DrawioCodec:
             
             # Start point
             source_cell = cell_by_id.get(source_id) if source_id else None
-            source_type = source_cell.attrib.get("value", "resistor") if source_cell is not None else "resistor"
-            
+            source_type = DrawioCodec._infer_cell_type(source_cell) if source_cell is not None else "resistor"
+
             target_cell = cell_by_id.get(target_id) if target_id else None
-            target_type = target_cell.attrib.get("value", "resistor") if target_cell is not None else "resistor"
+            target_type = DrawioCodec._infer_cell_type(target_cell) if target_cell is not None else "resistor"
 
             # Parse entry/exit parameters
             exit_x = float(style_dict.get("exitX", 0.0))

@@ -154,6 +154,52 @@
                     </div>
                 </div>
 
+                <!-- Group: Dependent Sources -->
+                <div class="flex flex-col gap-2">
+                    <span class="text-[9px] font-bold text-gray-500 uppercase tracking-widest">Dependent Sources</span>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button class="tool-btn flex flex-col items-center justify-center p-2 rounded-lg bg-gray-950/40 border border-gray-850 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-300 transition duration-150" data-type="vcvs">
+                            <span class="text-xs font-semibold">VCVS</span>
+                            <span class="text-[8px] text-gray-600">E · v = k·v</span>
+                        </button>
+                        <button class="tool-btn flex flex-col items-center justify-center p-2 rounded-lg bg-gray-950/40 border border-gray-850 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-300 transition duration-150" data-type="vccs">
+                            <span class="text-xs font-semibold">VCCS</span>
+                            <span class="text-[8px] text-gray-600">G · i = gm·v</span>
+                        </button>
+                        <button class="tool-btn flex flex-col items-center justify-center p-2 rounded-lg bg-gray-950/40 border border-gray-850 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-300 transition duration-150" data-type="cccs">
+                            <span class="text-xs font-semibold">CCCS</span>
+                            <span class="text-[8px] text-gray-600">F · i = k·i</span>
+                        </button>
+                        <button class="tool-btn flex flex-col items-center justify-center p-2 rounded-lg bg-gray-950/40 border border-gray-850 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-300 transition duration-150" data-type="ccvs">
+                            <span class="text-xs font-semibold">CCVS</span>
+                            <span class="text-[8px] text-gray-600">H · v = r·i</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Group: Transistors -->
+                <div class="flex flex-col gap-2">
+                    <span class="text-[9px] font-bold text-gray-500 uppercase tracking-widest">Transistors</span>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button class="tool-btn flex flex-col items-center justify-center p-2 rounded-lg bg-gray-950/40 border border-gray-850 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-300 transition duration-150" data-type="nmos">
+                            <span class="text-xs font-semibold">NMOS</span>
+                            <span class="text-[8px] text-gray-600">Level-1 FET</span>
+                        </button>
+                        <button class="tool-btn flex flex-col items-center justify-center p-2 rounded-lg bg-gray-950/40 border border-gray-850 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-300 transition duration-150" data-type="pmos">
+                            <span class="text-xs font-semibold">PMOS</span>
+                            <span class="text-[8px] text-gray-600">Level-1 FET</span>
+                        </button>
+                        <button class="tool-btn flex flex-col items-center justify-center p-2 rounded-lg bg-gray-950/40 border border-gray-850 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-300 transition duration-150" data-type="bjt_npn">
+                            <span class="text-xs font-semibold">NPN</span>
+                            <span class="text-[8px] text-gray-600">Ebers-Moll</span>
+                        </button>
+                        <button class="tool-btn flex flex-col items-center justify-center p-2 rounded-lg bg-gray-950/40 border border-gray-850 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-300 transition duration-150" data-type="bjt_pnp">
+                            <span class="text-xs font-semibold">PNP</span>
+                            <span class="text-[8px] text-gray-600">Ebers-Moll</span>
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Group 3: Digital Logic -->
                 <div class="flex flex-col gap-2">
                     <span class="text-[9px] font-bold text-gray-500 uppercase tracking-widest">Digital Logic</span>
@@ -176,12 +222,21 @@
                         </button>
                     </div>
                 </div>
+                <!-- Component Inspector -->
+                <div class="flex flex-col gap-2" id="inspector-panel">
+                    <span class="text-[9px] font-bold text-gray-500 uppercase tracking-widest">component inspector</span>
+                    <div id="inspector-body" class="rounded-lg bg-gray-950/60 border border-gray-800 p-3 flex flex-col gap-2">
+                        <p id="inspector-empty" class="text-[10px] text-gray-500 italic">Click a component on the canvas to edit its parameters.</p>
+                        <div id="inspector-fields" class="flex flex-col gap-1.5 hidden"></div>
+                        <button id="inspector-apply" class="hidden px-2 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-[10px] font-semibold uppercase tracking-wide text-white transition">Apply</button>
+                    </div>
+                </div>
             </div>
-            
+
             <!-- Quick Helper Info -->
             <div class="p-4 border-t border-gray-800/80 bg-gray-950/40">
                 <span class="text-[8px] font-bold text-gray-500 uppercase tracking-widest block mb-1">hotkey reference</span>
-                <p class="text-[9px] text-gray-400 leading-normal">Double-click component on canvas to rotate it 90 degrees. Drag elements with mouse. Click pins to wire them.</p>
+                <p class="text-[9px] text-gray-400 leading-normal">Double-click component on canvas to rotate it 90 degrees. Drag elements with mouse. Click pins to wire them. Click a body to inspect parameters.</p>
             </div>
         </aside>
 
@@ -213,15 +268,38 @@
             <div class="h-10 bg-gray-900/60 border-b border-gray-800/80 flex items-center justify-between px-4">
                 <span class="text-xs font-bold uppercase tracking-wider text-indigo-400 neon-glow-cyan">simulation waveforms</span>
                 <div class="flex items-center gap-2">
+                    <label class="flex items-center gap-1 text-[9px] text-gray-400 uppercase font-semibold cursor-pointer" title="Adaptive timestep with local truncation error control (transient mode)">
+                        <input type="checkbox" id="sim-adaptive" class="w-3 h-3 rounded bg-gray-950 border-gray-800 text-cyan-500 cursor-pointer">
+                        LTE
+                    </label>
                     <select id="sim-mode" class="bg-gray-950 text-gray-300 text-xs px-2 py-1 rounded border border-gray-800 outline-none">
                         <option value="dc">DC Bias Operating Pt</option>
                         <option value="transient" selected>Transient Step (Time)</option>
+                        <option value="dc_sweep">DC Param Sweep</option>
+                        <option value="monte_carlo">Monte Carlo (DC)</option>
+                        <option value="ac">AC Sweep (Bode)</option>
                         <option value="mixed">Mixed Co-Simulation</option>
                     </select>
                     <button id="btn-simulate" class="px-3 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-xs font-semibold transition tracking-wide text-white uppercase shadow-md shadow-cyan-500/10">
                         run solver
                     </button>
+                    <button id="btn-export-csv" title="Run the selected analysis and download the results as CSV" class="px-2 py-1 rounded border border-gray-700 hover:border-cyan-500/40 text-[10px] font-semibold transition tracking-wide text-gray-300 uppercase">
+                        csv
+                    </button>
                 </div>
+            </div>
+
+            <!-- DC Sweep parameter controls (visible only in dc_sweep mode) -->
+            <div id="sweep-controls" style="display: none;" class="h-9 bg-gray-900/40 border-b border-gray-800/60 items-center gap-1.5 px-4">
+                <span class="text-[9px] text-gray-500 uppercase font-bold">sweep</span>
+                <input id="sweep-component" value="V1" title="Component ID" class="w-12 bg-gray-950 border border-gray-800 rounded px-1.5 py-0.5 text-[10px] text-gray-200 code-font outline-none focus:border-cyan-500/50">
+                <input id="sweep-param" value="V" title="Parameter" class="w-10 bg-gray-950 border border-gray-800 rounded px-1.5 py-0.5 text-[10px] text-gray-200 code-font outline-none focus:border-cyan-500/50">
+                <span class="text-[9px] text-gray-500">from</span>
+                <input id="sweep-start" value="0" title="Start" class="w-12 bg-gray-950 border border-gray-800 rounded px-1.5 py-0.5 text-[10px] text-gray-200 code-font outline-none focus:border-cyan-500/50">
+                <span class="text-[9px] text-gray-500">to</span>
+                <input id="sweep-stop" value="10" title="Stop" class="w-12 bg-gray-950 border border-gray-800 rounded px-1.5 py-0.5 text-[10px] text-gray-200 code-font outline-none focus:border-cyan-500/50">
+                <span class="text-[9px] text-gray-500">pts</span>
+                <input id="sweep-points" value="50" title="Points" class="w-11 bg-gray-950 border border-gray-800 rounded px-1.5 py-0.5 text-[10px] text-gray-200 code-font outline-none focus:border-cyan-500/50">
             </div>
 
             <!-- Plot Board Space -->

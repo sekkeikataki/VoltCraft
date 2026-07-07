@@ -1,4 +1,3 @@
-import json
 from typing import Dict, Any, Tuple
 
 class NativeGraphValidator:
@@ -34,6 +33,18 @@ class NativeGraphValidator:
         for net in graph["nets"]:
             if not isinstance(net, str):
                 return False, f"Net name must be a string: {net}"
+
+        known_nets = set(graph["nets"])
+
+        # Optional subcircuit port declarations
+        if "ports" in graph:
+            if not isinstance(graph["ports"], list):
+                return False, "ports must be a list of net names"
+            for port in graph["ports"]:
+                if not isinstance(port, str):
+                    return False, f"Port name must be a string: {port}"
+                if port not in known_nets:
+                    return False, f"Port '{port}' must reference a declared net"
 
         # Validate nodes
         if not isinstance(graph["nodes"], list):
@@ -86,7 +97,7 @@ class NativeGraphValidator:
                     return False, f"Node '{node_id}' pin name must be a string: {pin_name}"
                 if not isinstance(net_name, str):
                     return False, f"Node '{node_id}' pin '{pin_name}' must be mapped to a string net name"
-                if net_name not in graph["nets"]:
+                if net_name not in known_nets:
                     return False, f"Node '{node_id}' pin '{pin_name}' is mapped to unregistered net: '{net_name}'"
 
             # Validate refs if present
@@ -118,7 +129,7 @@ class NativeGraphValidator:
             edge_ids.add(edge_id)
 
             edge_net = edge["net"]
-            if not isinstance(edge_net, str) or edge_net not in graph["nets"]:
+            if not isinstance(edge_net, str) or edge_net not in known_nets:
                 return False, f"Edge '{edge_id}' net '{edge_net}' must be defined in 'nets'"
 
             # Validate path list of points

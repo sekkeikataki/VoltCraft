@@ -1,7 +1,111 @@
 import numpy as np
 import heapq
 import math
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Optional, Tuple
+
+
+def _positive_param(params: Dict[str, Any], key: str, default: float, component_id: str) -> float:
+    """Reads a component parameter that must be strictly positive."""
+    value = float(params.get(key, default))
+    if value <= 0.0:
+        raise ValueError(f"Component '{component_id}' requires a positive {key}, got {value}")
+    return value
+
+
+def _stamp_conductance(A: np.ndarray, ia: Optional[int], ib: Optional[int], g: float) -> None:
+    """Stamps a conductance g between two node indices (None = ground)."""
+    if ia is not None:
+        A[ia, ia] += g
+    if ib is not None:
+        A[ib, ib] += g
+    if ia is not None and ib is not None:
+        A[ia, ib] -= g
+        A[ib, ia] -= g
+
+
+def _stamp_current_injection(z: np.ndarray, ia: Optional[int], ib: Optional[int], i: float) -> None:
+    """Stamps a current i injected into node a and drawn out of node b."""
+    if ia is not None:
+        z[ia] += i
+    if ib is not None:
+        z[ib] -= i
+
+
+def _stamp_voltage_branch(A: np.ndarray, ia: Optional[int], ib: Optional[int], br_idx: int) -> None:
+    """Stamps the +/- incidence entries linking a voltage branch to its nodes."""
+    if ia is not None:
+        A[ia, br_idx] += 1.0
+        A[br_idx, ia] += 1.0
+    if ib is not None:
+        A[ib, br_idx] -= 1.0
+        A[br_idx, ib] -= 1.0
+
+
+def _require_wired_branch(n_id: str, n_type: str, ia: Optional[int], ib: Optional[int]) -> None:
+    """
+    A voltage-defining branch with every terminal on ground produces an
+    all-zero matrix row (an unsolvable short); report it by name instead of
+    letting numpy fail with a bare 'Singular matrix'.
+    """
+    if ia is None and ib is None:
+        raise ValueError(
+            f"'{n_id}' ({n_type}) has every terminal on ground net n0 - wire its pins before simulating"
+        )
+
+
+def source_voltage_at(params: Dict[str, Any], t: float) -> float:
+    """
+    Evaluates a voltage source's value at time t.
+
+    Waveform parameters:
+        V:      amplitude (peak for periodic waves, level for DC), default 5.0
+        freq:   frequency in Hz; a positive freq makes the source periodic
+        wave:   "sine" (default), "square", "triangle", or "sawtooth"
+        phase:  phase offset in radians (all waveforms)
+        offset: DC offset added to periodic waveforms, default 0.0
+        duty:   square-wave duty cycle in (0, 1), default 0.5
+
+    Periodic waves swing +/-V around the offset, matching the sine
+    convention. A source without a positive freq is a DC level of V.
+    """
+    v_amp = float(params.get("V", 5.0))
+    freq = float(params.get("freq", 0.0))
+    if freq <= 0.0:
+        return v_amp
+
+    wave = params.get("wave", "sine")
+    phase = float(params.get("phase", 0.0))
+    offset = float(params.get("offset", 0.0))
+
+    if wave == "sine":
+        return offset + v_amp * math.sin(2.0 * math.pi * freq * t + phase)
+
+    # Normalized position in the cycle [0, 1), with phase in radians
+    cycle = (t * freq + phase / (2.0 * math.pi)) % 1.0
+
+    if wave == "square":
+        duty = float(params.get("duty", 0.5))
+        return offset + (v_amp if cycle < duty else -v_amp)
+    elif wave == "triangle":
+        # -V at cycle 0, +V at cycle 0.5, back to -V at cycle 1
+        if cycle < 0.5:
+            return offset + v_amp * (4.0 * cycle - 1.0)
+        return offset + v_amp * (3.0 - 4.0 * cycle)
+    elif wave == "sawtooth":
+        return offset + v_amp * (2.0 * cycle - 1.0)
+
+    raise ValueError(f"Unknown source waveform: {wave!r}")
+
+
+# Primary value parameter (and its default) per tolerance-bearing component
+PRIMARY_VALUE_PARAMS = {
+    "resistor": ("R", 1000.0),
+    "capacitor": ("C", 1e-6),
+    "inductor": ("L", 1e-3),
+    "voltage_source": ("V", 5.0),
+    "current_source": ("I", 0.0)
+}
+
 
 class ContinuousSolver:
     """
@@ -13,12 +117,21 @@ class ContinuousSolver:
         self.nodes = nodes
         self.edges = edges
         self.g_min = 1e-12  # Minimum shunt conductance to prevent singular matrices
-        
+        self._mappings_cache = None
+        # Populated by solve_dc/solve_transient/solve_ac with convergence
+        # diagnostics for the most recent analysis (see each method)
+        self.last_solve_stats: Optional[Dict[str, Any]] = None
+
     def _get_nets_and_mappings(self) -> Tuple[List[str], Dict[str, int], List[Dict[str, Any]]]:
         """
         Gathers all unique nets in the circuit and assigns matrix indices.
         Excludes 'n0' (ground) from the KCL index mapping.
+        The result is cached: the circuit topology (pins/nets) must not change
+        during the lifetime of a solver instance (parameter values may).
         """
+        if self._mappings_cache is not None:
+            return self._mappings_cache
+
         nets_set = set()
         for node in self.nodes:
             for pin, net in node.get("pins", {}).items():
@@ -42,10 +155,11 @@ class ContinuousSolver:
         # Find voltage-defining components
         voltage_components = []
         for node in self.nodes:
-            if node["type"] in ("voltage_source", "opamp", "digital_interface_out"):
+            if node["type"] in ("voltage_source", "opamp", "digital_interface_out", "vcvs", "ccvs"):
                 voltage_components.append(node)
-                
-        return nets_list, net_map, voltage_components
+
+        self._mappings_cache = (nets_list, net_map, voltage_components)
+        return self._mappings_cache
 
     def limit_diode_voltage(self, v_old: float, v_new: float, vt: float, n: float, Is: float) -> float:
         """
@@ -59,6 +173,292 @@ class ContinuousSolver:
         elif v_new < 0.0 and (v_old - v_new) > 2.0 * nvt:
             return v_old - 2.0 * nvt
         return v_new
+
+    def _mos_small_signal(self, node: Dict[str, Any], x: Optional[np.ndarray]) -> Dict[str, Any]:
+        """
+        Level-1 (square-law) MOSFET linearization at the voltages in x.
+        Handles cutoff/triode/saturation, drain-source reversal by symmetry,
+        and PMOS polarity. Returns physical-frame quantities: i_d is the
+        current entering the drain terminal, gm/gds the small-signal
+        (trans)conductances, and eff_d/eff_s the (possibly swapped) node
+        indices the stamps apply to.
+        """
+        _, net_map, _ = self._get_nets_and_mappings()
+        pins = node.get("pins", {})
+        params = node.get("params", {})
+        n_id = node["id"]
+
+        p = -1.0 if node["type"] == "pmos" else 1.0
+        ig = net_map.get(pins.get("gate", "n0"))
+        idr = net_map.get(pins.get("drain", "n0"))
+        isr = net_map.get(pins.get("source", "n0"))
+
+        def v_at(idx: Optional[int]) -> float:
+            return float(x[idx]) if (x is not None and idx is not None) else 0.0
+
+        K = _positive_param(params, "K", 1e-3, n_id)       # A/V^2 (already includes W/L)
+        vth = float(params.get("Vth", 1.0))
+        lam = float(params.get("lambda", 0.0))
+
+        vgs = p * (v_at(ig) - v_at(isr))
+        vds = p * (v_at(idr) - v_at(isr))
+
+        # The device is symmetric: for negative vds operate with the
+        # terminals swapped so the model always sees vds >= 0
+        eff_d, eff_s = idr, isr
+        if vds < 0.0:
+            vgs -= vds
+            vds = -vds
+            eff_d, eff_s = isr, idr
+
+        vov = vgs - vth
+        if vov <= 0.0:
+            i_f, gm, gds = 0.0, 0.0, 1e-12
+        elif vds >= vov:
+            # Saturation
+            chan = 1.0 + lam * vds
+            i_f = 0.5 * K * vov * vov * chan
+            gm = K * vov * chan
+            gds = 0.5 * K * vov * vov * lam + 1e-12
+        else:
+            # Triode
+            chan = 1.0 + lam * vds
+            i_f = K * (vov - 0.5 * vds) * vds * chan
+            gm = K * vds * chan
+            gds = K * (vov - vds) * chan + K * (vov - 0.5 * vds) * vds * lam + 1e-12
+
+        return {
+            "i_d": p * i_f,     # current entering the physical drain pin
+            "gm": gm,
+            "gds": gds,
+            "eff_d": eff_d,
+            "eff_s": eff_s,
+            "gate": ig,
+            "vgs": vgs if p > 0 else -vgs,
+            "vds": p * (v_at(idr) - v_at(isr))
+        }
+
+    def _stamp_mos(self, A: np.ndarray, z: Optional[np.ndarray], node: Dict[str, Any], x: Optional[np.ndarray]) -> None:
+        """
+        Stamps the MOSFET companion model: gds across drain-source, a gm
+        transconductance from the gate, and (when z is given) the Newton
+        equivalent current source. With z=None only the small-signal
+        conductances are stamped (AC analysis).
+        """
+        ss = self._mos_small_signal(node, x)
+        ed, es, ig = ss["eff_d"], ss["eff_s"], ss["gate"]
+        gm, gds = ss["gm"], ss["gds"]
+
+        _stamp_conductance(A, ed, es, gds)
+        # Transconductance rows: current gm*(vg - v_eff_s) enters eff_d
+        if ed is not None:
+            if ig is not None:
+                A[ed, ig] += gm
+            if es is not None:
+                A[ed, es] -= gm
+        if es is not None:
+            if ig is not None:
+                A[es, ig] -= gm
+            if es is not None:
+                A[es, es] += gm
+
+        if z is not None:
+            def v_at(idx):
+                return float(x[idx]) if (x is not None and idx is not None) else 0.0
+            # Constant term of the linearized drain current (same companion
+            # pattern as the diode stamp)
+            i_const = ss["i_d"] - gds * (v_at(ed) - v_at(es)) - gm * (v_at(ig) - v_at(es))
+            _stamp_current_injection(z, ed, es, -i_const)
+
+    def _bjt_small_signal(self, node: Dict[str, Any], x: Optional[np.ndarray]) -> Dict[str, Any]:
+        """
+        Ebers-Moll BJT linearization at the voltages in x. Returns the 3x3
+        physical-frame conductance matrix over (collector, base, emitter),
+        the terminal currents entering each pin, and the node indices.
+        """
+        _, net_map, _ = self._get_nets_and_mappings()
+        pins = node.get("pins", {})
+        params = node.get("params", {})
+
+        p = -1.0 if node["type"] == "bjt_pnp" else 1.0
+        ic_ = net_map.get(pins.get("collector", "n0"))
+        ib_ = net_map.get(pins.get("base", "n0"))
+        ie_ = net_map.get(pins.get("emitter", "n0"))
+
+        def v_at(idx: Optional[int]) -> float:
+            return float(x[idx]) if (x is not None and idx is not None) else 0.0
+
+        Is = float(params.get("Is", 1e-15))
+        beta_f = float(params.get("beta_f", 100.0))
+        beta_r = float(params.get("beta_r", 1.0))
+        Vt = float(params.get("Vt", 0.02585))
+
+        a_f = beta_f / (beta_f + 1.0)
+        a_r = beta_r / (beta_r + 1.0)
+        i_es = Is / a_f
+        i_cs = Is / a_r
+
+        # Junction voltages in the NPN frame, clamped like the diode model
+        vbe = max(-10.0, min(p * (v_at(ib_) - v_at(ie_)), 2.0))
+        vbc = max(-10.0, min(p * (v_at(ib_) - v_at(ic_)), 2.0))
+
+        exp_be = math.exp(vbe / Vt)
+        exp_bc = math.exp(vbc / Vt)
+        i_f = i_es * (exp_be - 1.0)
+        i_r = i_cs * (exp_bc - 1.0)
+        g_f = (i_es / Vt) * exp_be
+        g_r = (i_cs / Vt) * exp_bc
+
+        # Terminal currents entering each pin (NPN frame)
+        ic_f = a_f * i_f - i_r
+        ie_f = -i_f + a_r * i_r
+        ib_f = -(ic_f + ie_f)
+
+        # Physical-frame conductance matrix over (c, b, e); polarity cancels
+        # in the quadratic form, only the current constants carry p
+        G = (
+            (g_r, a_f * g_f - g_r, -a_f * g_f),
+            (-(1.0 - a_r) * g_r, (1.0 - a_f) * g_f + (1.0 - a_r) * g_r, -(1.0 - a_f) * g_f),
+            (-a_r * g_r, a_r * g_r - g_f, g_f)
+        )
+
+        return {
+            "indices": (ic_, ib_, ie_),
+            "G": G,
+            "i_terms": (p * ic_f, p * ib_f, p * ie_f),
+            "vbe": p * vbe,
+            "vce": v_at(ic_) - v_at(ie_)
+        }
+
+    def _stamp_bjt(self, A: np.ndarray, z: Optional[np.ndarray], node: Dict[str, Any], x: Optional[np.ndarray]) -> None:
+        """
+        Stamps the BJT companion model over its three terminals. With z=None
+        only the small-signal conductance matrix is stamped (AC analysis).
+        """
+        ss = self._bjt_small_signal(node, x)
+        idxs = ss["indices"]
+        G = ss["G"]
+
+        for row in range(3):
+            if idxs[row] is None:
+                continue
+            for col in range(3):
+                if idxs[col] is not None:
+                    A[idxs[row], idxs[col]] += G[row][col]
+
+        if z is not None:
+            def v_at(idx):
+                return float(x[idx]) if (x is not None and idx is not None) else 0.0
+            volts = [v_at(idx) for idx in idxs]
+            for row in range(3):
+                if idxs[row] is None:
+                    continue
+                i_const = ss["i_terms"][row] - sum(G[row][col] * volts[col] for col in range(3))
+                z[idxs[row]] -= i_const
+
+    def _stamp_controlled_source(self, A: np.ndarray, node: Dict[str, Any],
+                                 net_map: Dict[str, int], volt_map: Dict[str, int]) -> None:
+        """
+        Stamps the four SPICE dependent sources with the standard MNA
+        entries. All are linear, so the same stamps serve DC, transient,
+        and AC assembly. Conventions:
+
+        - vcvs (E): v(p) - v(n) = gain * (v(cp) - v(cn));  branch element
+        - vccs (G): current gain_g * (v(cp) - v(cn)) flows p -> n
+        - cccs (F): current gain * i(control) flows p -> n
+        - ccvs (H): v(p) - v(n) = r * i(control);          branch element
+
+        For F and H, params.control names a voltage-defining component
+        whose MNA branch current (SPICE I(V) convention) is the control.
+        """
+        n_type = node["type"]
+        n_id = node["id"]
+        pins = node.get("pins", {})
+        params = node.get("params", {})
+
+        ip = net_map.get(pins.get("p", "n0"))
+        in_ = net_map.get(pins.get("n", "n0"))
+
+        def control_branch() -> int:
+            control = params.get("control")
+            if not control or control not in volt_map:
+                raise ValueError(
+                    f"'{n_id}' ({n_type}) requires params.control naming a "
+                    f"voltage-defining component (voltage_source, opamp, vcvs, ccvs)"
+                )
+            return volt_map[control]
+
+        if n_type == "vccs":
+            gm = float(params.get("gm", 1e-3))
+            icp = net_map.get(pins.get("cp", "n0"))
+            icn = net_map.get(pins.get("cn", "n0"))
+            for row, sign_r in ((ip, 1.0), (in_, -1.0)):
+                if row is None:
+                    continue
+                if icp is not None:
+                    A[row, icp] += sign_r * gm
+                if icn is not None:
+                    A[row, icn] -= sign_r * gm
+
+        elif n_type == "vcvs":
+            gain = float(params.get("gain", 1.0))
+            icp = net_map.get(pins.get("cp", "n0"))
+            icn = net_map.get(pins.get("cn", "n0"))
+            br = volt_map[n_id]
+            _require_wired_branch(n_id, n_type, ip, in_)
+            _stamp_voltage_branch(A, ip, in_, br)
+            if icp is not None:
+                A[br, icp] -= gain
+            if icn is not None:
+                A[br, icn] += gain
+
+        elif n_type == "cccs":
+            gain = float(params.get("gain", 1.0))
+            br_ctrl = control_branch()
+            if ip is not None:
+                A[ip, br_ctrl] += gain
+            if in_ is not None:
+                A[in_, br_ctrl] -= gain
+
+        elif n_type == "ccvs":
+            r_val = float(params.get("r", 1.0))
+            br = volt_map[n_id]
+            br_ctrl = control_branch()
+            _require_wired_branch(n_id, n_type, ip, in_)
+            _stamp_voltage_branch(A, ip, in_, br)
+            A[br, br_ctrl] -= r_val
+
+    def _capacitive_elements(self, node: Dict[str, Any]):
+        """
+        Yields (state_key, pin_a, pin_b, capacitance) for every capacitance
+        a component contributes: explicit capacitors plus implicit device
+        capacitances (diode junction Cj0, MOSFET gate Cgs/Cgd). The state
+        key namespaces the companion history entries.
+        """
+        n_type = node["type"]
+        n_id = node["id"]
+        params = node.get("params", {})
+
+        if n_type == "capacitor":
+            yield n_id, "a", "b", _positive_param(params, "C", 1e-6, n_id)
+        elif n_type == "diode":
+            cj0 = float(params.get("Cj0", 0.0))
+            if cj0 > 0.0:
+                yield f"{n_id}_cj", "anode", "cathode", cj0
+        elif n_type in ("nmos", "pmos"):
+            cgs = float(params.get("Cgs", 0.0))
+            if cgs > 0.0:
+                yield f"{n_id}_cgs", "gate", "source", cgs
+            cgd = float(params.get("Cgd", 0.0))
+            if cgd > 0.0:
+                yield f"{n_id}_cgd", "gate", "drain", cgd
+        elif n_type in ("bjt_npn", "bjt_pnp"):
+            cje = float(params.get("Cje", 0.0))
+            if cje > 0.0:
+                yield f"{n_id}_cje", "base", "emitter", cje
+            cjc = float(params.get("Cjc", 0.0))
+            if cjc > 0.0:
+                yield f"{n_id}_cjc", "base", "collector", cjc
 
     def assemble_mna(self, t: float, dt: float, history: Dict[str, Any], prev_x: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray, Dict[str, int]]:
         """
@@ -84,80 +484,43 @@ class ContinuousSolver:
         for idx in range(num_nets):
             A[idx, idx] += self.g_min
             
+        def pin_index(pins: Dict[str, str], pin_name: str) -> Optional[int]:
+            return net_map.get(pins.get(pin_name, "n0"))
+
         # Process each component
         for node in self.nodes:
             n_type = node["type"]
             n_id = node["id"]
             pins = node.get("pins", {})
             params = node.get("params", {})
-            
+
             if n_type == "resistor":
-                r_val = float(params.get("R", 1000.0))
-                g_val = 1.0 / r_val
-                na = pins.get("a", "n0")
-                nb = pins.get("b", "n0")
-                
-                ia = net_map.get(na)
-                ib = net_map.get(nb)
-                
-                if ia is not None:
-                    A[ia, ia] += g_val
-                if ib is not None:
-                    A[ib, ib] += g_val
-                if ia is not None and ib is not None:
-                    A[ia, ib] -= g_val
-                    A[ib, ia] -= g_val
-                    
+                r_val = _positive_param(params, "R", 1000.0, n_id)
+                _stamp_conductance(A, pin_index(pins, "a"), pin_index(pins, "b"), 1.0 / r_val)
+
             elif n_type == "current_source":
                 i_val = float(params.get("I", 0.0))
-                na = pins.get("a", "n0")
-                nb = pins.get("b", "n0")
-                
-                ia = net_map.get(na)
-                ib = net_map.get(nb)
-                
                 # I source flows out of a, into b
-                if ia is not None:
-                    z[ia] -= i_val
-                if ib is not None:
-                    z[ib] += i_val
-                    
+                _stamp_current_injection(z, pin_index(pins, "a"), pin_index(pins, "b"), -i_val)
+
             elif n_type == "voltage_source":
-                v_val = float(params.get("V", 5.0))
-                # Sinusoidal or transient function support
-                if "freq" in params:
-                    freq = float(params["freq"])
-                    phase = float(params.get("phase", 0.0))
-                    v_val = v_val * math.sin(2.0 * math.pi * freq * t + phase)
-                    
-                na = pins.get("a", "n0")  # Positive
-                nb = pins.get("b", "n0")  # Negative
-                
-                ia = net_map.get(na)
-                ib = net_map.get(nb)
                 br_idx = volt_map[n_id]
-                
-                if ia is not None:
-                    A[ia, br_idx] += 1.0
-                    A[br_idx, ia] += 1.0
-                if ib is not None:
-                    A[ib, br_idx] -= 1.0
-                    A[br_idx, ib] -= 1.0
-                z[br_idx] = v_val
-                
+                # Pin a is positive, pin b negative
+                ia = pin_index(pins, "a")
+                ib = pin_index(pins, "b")
+                _require_wired_branch(n_id, n_type, ia, ib)
+                _stamp_voltage_branch(A, ia, ib, br_idx)
+                z[br_idx] = source_voltage_at(params, t)
+
             elif n_type == "diode":
-                na = pins.get("anode", "n0")
-                nc = pins.get("cathode", "n0")
-                
-                ia = net_map.get(na)
-                ic = net_map.get(nc)
-                
+                ia = pin_index(pins, "anode")
+                ic = pin_index(pins, "cathode")
+
                 Is = float(params.get("Is", 1e-14))
                 N = float(params.get("N", 1.0))
                 Vt = float(params.get("Vt", 0.02585))
-                
+
                 # Extract previous diode voltage for NR linearization
-                v_d = 0.0
                 if prev_x is not None:
                     v_a = prev_x[ia] if ia is not None else 0.0
                     v_c = prev_x[ic] if ic is not None else 0.0
@@ -165,39 +528,87 @@ class ContinuousSolver:
                 else:
                     # DC initial guess
                     v_d = 0.6
-                    
+
                 # Compute linearized diode companion parameters
                 v_d = max(-10.0, min(v_d, 2.0))  # Sanity clamp
                 exp_term = math.exp(v_d / (N * Vt))
                 i_d = Is * (exp_term - 1.0)
                 g_d = (Is / (N * Vt)) * exp_term
+                # Companion source I_eq = i_d - g_d*v_d flows anode->cathode;
+                # as an injection that is +(g_d*v_d - i_d) into the anode
                 i_eq = g_d * v_d - i_d
-                
-                if ia is not None:
-                    A[ia, ia] += g_d
-                if ic is not None:
-                    A[ic, ic] += g_d
-                if ia is not None and ic is not None:
-                    A[ia, ic] -= g_d
-                    A[ic, ia] -= g_d
-                    
-                if ia is not None:
-                    z[ia] -= i_eq
-                if ic is not None:
-                    z[ic] += i_eq
-                    
-            elif n_type == "capacitor":
-                c_val = float(params.get("C", 1e-6))
-                na = pins.get("a", "n0")
-                nb = pins.get("b", "n0")
-                
-                ia = net_map.get(na)
-                ib = net_map.get(nb)
-                
-                # Retrieve history values
+
+                _stamp_conductance(A, ia, ic, g_d)
+                _stamp_current_injection(z, ia, ic, i_eq)
+
+            elif n_type == "inductor":
+                l_val = _positive_param(params, "L", 1e-3, n_id)
+                ia = pin_index(pins, "a")
+                ib = pin_index(pins, "b")
+
                 prev_v = float(history.get(f"{n_id}_v", 0.0))
                 prev_i = float(history.get(f"{n_id}_i", 0.0))
-                
+
+                method = history.get("integration_method", "backward_euler")
+                if method == "trapezoidal":
+                    g_eq = dt / (2.0 * l_val)
+                    i_eq = g_eq * prev_v + prev_i
+                else:
+                    g_eq = dt / l_val
+                    i_eq = prev_i
+
+                _stamp_conductance(A, ia, ib, g_eq)
+                _stamp_current_injection(z, ia, ib, -i_eq)
+
+            elif n_type == "opamp":
+                ini = pin_index(pins, "non_inverting")
+                iinv = pin_index(pins, "inverting")
+                iout = pin_index(pins, "out")
+
+                gain = float(params.get("gain", 1e5))
+                Rin = _positive_param(params, "Rin", 1e6, n_id)
+                Rout = float(params.get("Rout", 50.0))
+
+                # Stamp Rin between terminals
+                _stamp_conductance(A, ini, iinv, 1.0 / Rin)
+
+                # Output branch: v_out - gain*(v_pos - v_neg) - Rout*i_out = 0
+                br_idx = volt_map[n_id]
+                _stamp_voltage_branch(A, iout, None, br_idx)
+                if ini is not None:
+                    A[br_idx, ini] -= gain
+                if iinv is not None:
+                    A[br_idx, iinv] += gain
+
+                A[br_idx, br_idx] -= Rout
+                z[br_idx] = 0.0
+
+            elif n_type in ("nmos", "pmos"):
+                self._stamp_mos(A, z, node, prev_x)
+
+            elif n_type in ("bjt_npn", "bjt_pnp"):
+                self._stamp_bjt(A, z, node, prev_x)
+
+            elif n_type in ("vcvs", "vccs", "cccs", "ccvs"):
+                self._stamp_controlled_source(A, node, net_map, volt_map)
+
+            elif n_type == "digital_interface_out":
+                v_val = float(params.get("V", 0.0))
+                br_idx = volt_map[n_id]
+                # Output pin referenced to ground
+                ia = pin_index(pins, "analog_out")
+                _require_wired_branch(n_id, n_type, ia, None)
+                _stamp_voltage_branch(A, ia, None, br_idx)
+                z[br_idx] = v_val
+
+            # Companion stamps for explicit capacitors and implicit device
+            # capacitances (diode Cj0, MOSFET Cgs/Cgd)
+            for state_key, pa, pb, c_val in self._capacitive_elements(node):
+                ia = pin_index(pins, pa)
+                ib = pin_index(pins, pb)
+                prev_v = float(history.get(f"{state_key}_v", 0.0))
+                prev_i = float(history.get(f"{state_key}_i", 0.0))
+
                 method = history.get("integration_method", "backward_euler")
                 if method == "trapezoidal":
                     g_eq = 2.0 * c_val / dt
@@ -206,106 +617,10 @@ class ContinuousSolver:
                     # Backward Euler
                     g_eq = c_val / dt
                     i_eq = g_eq * prev_v
-                    
-                # Resistor + Current source parallel stamp
-                if ia is not None:
-                    A[ia, ia] += g_eq
-                if ib is not None:
-                    A[ib, ib] += g_eq
-                if ia is not None and ib is not None:
-                    A[ia, ib] -= g_eq
-                    A[ib, ia] -= g_eq
-                    
-                if ia is not None:
-                    z[ia] += i_eq
-                if ib is not None:
-                    z[ib] -= i_eq
-                    
-            elif n_type == "inductor":
-                l_val = float(params.get("L", 1e-3))
-                na = pins.get("a", "n0")
-                nb = pins.get("b", "n0")
-                
-                ia = net_map.get(na)
-                ib = net_map.get(nb)
-                
-                prev_v = float(history.get(f"{n_id}_v", 0.0))
-                prev_i = float(history.get(f"{n_id}_i", 0.0))
-                
-                method = history.get("integration_method", "backward_euler")
-                if method == "trapezoidal":
-                    g_eq = dt / (2.0 * l_val)
-                    i_eq = g_eq * prev_v + prev_i
-                else:
-                    g_eq = dt / l_val
-                    i_eq = prev_i
-                    
-                if ia is not None:
-                    A[ia, ia] += g_eq
-                if ib is not None:
-                    A[ib, ib] += g_eq
-                if ia is not None and ib is not None:
-                    A[ia, ib] -= g_eq
-                    A[ib, ia] -= g_eq
-                    
-                if ia is not None:
-                    z[ia] -= i_eq
-                if ib is not None:
-                    z[ib] += i_eq
-                    
-            elif n_type == "opamp":
-                non_inv = pins.get("non_inverting", "n0")
-                inv = pins.get("inverting", "n0")
-                out = pins.get("out", "n0")
-                
-                ini = net_map.get(non_inv)
-                iinv = net_map.get(inv)
-                iout = net_map.get(out)
-                
-                gain = float(params.get("gain", 1e5))
-                Rin = float(params.get("Rin", 1e6))
-                Rout = float(params.get("Rout", 50.0))
-                
-                # Stamp Rin between terminals
-                g_in = 1.0 / Rin
-                if ini is not None:
-                    A[ini, ini] += g_in
-                if iinv is not None:
-                    A[iinv, iinv] += g_in
-                if ini is not None and iinv is not None:
-                    A[ini, iinv] -= g_in
-                    A[iinv, ini] -= g_in
-                    
-                # Output branch: v_out - gain*(v_pos - v_neg) - Rout*i_out = 0
-                br_idx = volt_map[n_id]
-                
-                if iout is not None:
-                    A[iout, br_idx] += 1.0
-                    A[br_idx, iout] += 1.0
-                if ini is not None:
-                    A[br_idx, ini] -= gain
-                if iinv is not None:
-                    A[br_idx, iinv] += gain
-                    
-                A[br_idx, br_idx] -= Rout
-                z[br_idx] = 0.0
-                
-            elif n_type == "digital_interface_out":
-                v_val = float(params.get("V", 0.0))
-                na = pins.get("analog_out", "n0")
-                nb = "n0"
-                
-                ia = net_map.get(na)
-                ib = net_map.get(nb)
-                br_idx = volt_map[n_id]
-                
-                if ia is not None:
-                    A[ia, br_idx] += 1.0
-                    A[br_idx, ia] += 1.0
-                if ib is not None:
-                    A[ib, br_idx] -= 1.0
-                    A[br_idx, ib] -= 1.0
-                z[br_idx] = v_val
+
+                # Resistor + Current source parallel companion stamp
+                _stamp_conductance(A, ia, ib, g_eq)
+                _stamp_current_injection(z, ia, ib, i_eq)
 
         # Construct comprehensive index mapping log
         complete_map = {}
@@ -315,6 +630,77 @@ class ContinuousSolver:
             complete_map[f"branch_{k}"] = v
             
         return A, z, complete_map
+
+    def init_energy_storage_history(self, x: np.ndarray, history: Dict[str, Any]) -> None:
+        """Seeds capacitive/inductive companion state from an operating point x."""
+        _, net_map, _ = self._get_nets_and_mappings()
+
+        def v_across(pins, pa, pb):
+            ia = net_map.get(pins.get(pa, "n0"))
+            ib = net_map.get(pins.get(pb, "n0"))
+            return (x[ia] if ia is not None else 0.0) - (x[ib] if ib is not None else 0.0)
+
+        for node in self.nodes:
+            pins = node.get("pins", {})
+            for state_key, pa, pb, _c in self._capacitive_elements(node):
+                history[f"{state_key}_v"] = v_across(pins, pa, pb)
+                history[f"{state_key}_i"] = 0.0  # Initial current is 0
+            if node["type"] == "inductor":
+                history[f"{node['id']}_v"] = 0.0
+                history[f"{node['id']}_i"] = 0.0
+
+    def update_energy_storage_history(self, x: np.ndarray, dt: float, history: Dict[str, Any],
+                                      method: str = "backward_euler") -> None:
+        """Advances capacitive/inductive companion state after a solved timestep."""
+        _, net_map, _ = self._get_nets_and_mappings()
+
+        def v_across(pins, pa, pb):
+            ia = net_map.get(pins.get(pa, "n0"))
+            ib = net_map.get(pins.get(pb, "n0"))
+            return (x[ia] if ia is not None else 0.0) - (x[ib] if ib is not None else 0.0)
+
+        for node in self.nodes:
+            pins = node.get("pins", {})
+
+            for state_key, pa, pb, c_val in self._capacitive_elements(node):
+                v_new = v_across(pins, pa, pb)
+                v_old = history[f"{state_key}_v"]
+                if method == "trapezoidal":
+                    i_new = (2.0 * c_val / dt) * (v_new - v_old) - history[f"{state_key}_i"]
+                else:
+                    i_new = (c_val / dt) * (v_new - v_old)
+                history[f"{state_key}_v"] = v_new
+                history[f"{state_key}_i"] = i_new
+
+            if node["type"] == "inductor":
+                n_id = node["id"]
+                l_val = float(node.get("params", {}).get("L", 1e-3))
+                v_new = v_across(pins, "a", "b")
+                v_old = history[f"{n_id}_v"]
+                if method == "trapezoidal":
+                    i_new = (dt / (2.0 * l_val)) * (v_new + v_old) + history[f"{n_id}_i"]
+                else:
+                    i_new = (dt / l_val) * v_new + history[f"{n_id}_i"]
+                history[f"{n_id}_v"] = v_new
+                history[f"{n_id}_i"] = i_new
+
+    def newton_transient_step(self, t: float, dt: float, history: Dict[str, Any], x0: np.ndarray,
+                              max_iter: int = 80, tol: float = 1e-6) -> Tuple[np.ndarray, int, float]:
+        """
+        Solves one timestep's MNA system by Newton-Raphson iteration from x0.
+        Returns (solution, iterations_used, final_step_norm).
+        """
+        x_curr = x0.copy()
+        diff = 0.0
+        iterations = 0
+        for iterations in range(1, max_iter + 1):
+            A, z, _ = self.assemble_mna(t, dt, history, prev_x=x_curr)
+            x_next = np.linalg.solve(A, z)
+            diff = np.linalg.norm(x_next - x_curr)
+            x_curr = x_next
+            if diff < tol:
+                break
+        return x_curr, iterations, float(diff)
 
     def solve_dc(self, max_iter: int = 150, tol: float = 1e-6) -> Tuple[np.ndarray, Dict[str, int]]:
         """
@@ -329,7 +715,11 @@ class ContinuousSolver:
         steps = 10
         x = np.zeros(size)
         history = {"integration_method": "backward_euler"}
-        
+        total_iterations = 0
+        converged = True
+        final_diff = 0.0
+        A = np.zeros((0, 0))
+
         for step in range(1, steps + 1):
             scale = step / float(steps)
             
@@ -351,16 +741,17 @@ class ContinuousSolver:
             
             # Newton Raphson Iterations
             for nr_iter in range(max_iter):
-                A, z, cmap = solver_step.assemble_mna(0.0, 1.0, history, prev_x=x)
-                
-                # Check condition number to diagnose stability
-                cond = np.linalg.cond(A)
-                if cond > 1e15:
-                    # Inject Gmin boost dynamically to restore condition
+                A, z, _ = solver_step.assemble_mna(0.0, 1.0, history, prev_x=x)
+
+                try:
+                    next_x = np.linalg.solve(A, z)
+                    if not np.all(np.isfinite(next_x)):
+                        raise np.linalg.LinAlgError("non-finite MNA solution")
+                except np.linalg.LinAlgError:
+                    # Inject Gmin boost dynamically to restore conditioning
                     for idx in range(len(net_map)):
                         A[idx, idx] += 1e-9
-                        
-                next_x = np.linalg.solve(A, z)
+                    next_x = np.linalg.solve(A, z)
                 
                 # Apply diode damping to prevent explosive exponential overflow
                 for node in self.nodes:
@@ -390,119 +781,586 @@ class ContinuousSolver:
                 # Check residual tolerance
                 diff = np.linalg.norm(next_x - x)
                 x = next_x
+                total_iterations += 1
+                final_diff = float(diff)
                 if diff < tol:
+                    converged = True
                     break
             else:
-                # If convergence fails, return last best guess
-                pass
-                
-        _, cmap, _ = self._get_nets_and_mappings()
+                # If convergence fails, carry on with the last best guess
+                converged = False
+
+        self.last_solve_stats = {
+            "analysis": "dc",
+            "matrix_size": size,
+            "source_steps": steps,
+            "newton_iterations": total_iterations,
+            "converged": bool(converged),
+            "residual": final_diff,
+            "condition_estimate": float(np.linalg.cond(A)) if A.size else 1.0
+        }
+
+        # Return the complete index map (nets plus voltage branch currents)
+        # so every entry of x is addressable, matching assemble_mna's map
+        cmap = dict(net_map)
+        for i, comp in enumerate(volt_comps):
+            cmap[f"branch_{comp['id']}"] = len(net_map) + i
         return x, cmap
 
     def solve_transient(self, t_start: float, t_stop: float, dt: float, method: str = "backward_euler", uic: bool = False) -> Tuple[np.ndarray, List[float], Dict[str, int]]:
         """
         Computes the continuous transient simulation waveform matrix over time.
         """
+        if dt <= 0.0:
+            raise ValueError(f"Transient timestep dt must be positive, got {dt}")
+        if t_stop <= t_start:
+            raise ValueError(f"t_stop ({t_stop}) must be greater than t_start ({t_start})")
+
         nets_list, net_map, volt_comps = self._get_nets_and_mappings()
         size = len(net_map) + len(volt_comps)
-        
+
         # Initial condition from DC analysis
         x, cmap = self.solve_dc()
         if uic:
             x = np.zeros(size)
-            
+
         steps = int(math.ceil((t_stop - t_start) / dt))
         results = np.zeros((size, steps + 1))
         results[:, 0] = x
-        
+
         time_points = [t_start]
         history = {"integration_method": method}
-        
-        # Initialize component state histories
+        self.init_energy_storage_history(x, history)
+
+        # Main transient integration loop
+        total_iterations = 0
+        max_step_iterations = 0
+        worst_residual = 0.0
+        for step in range(1, steps + 1):
+            t = t_start + step * dt
+            time_points.append(t)
+
+            x_curr, iters, residual = self.newton_transient_step(t, dt, history, results[:, step - 1])
+            total_iterations += iters
+            max_step_iterations = max(max_step_iterations, iters)
+            worst_residual = max(worst_residual, residual)
+            results[:, step] = x_curr
+            self.update_energy_storage_history(x_curr, dt, history, method=method)
+
+        self.last_solve_stats = {
+            "analysis": "transient",
+            "matrix_size": size,
+            "method": method,
+            "timesteps": steps,
+            "newton_iterations": total_iterations,
+            "max_step_iterations": max_step_iterations,
+            "residual": worst_residual
+        }
+
+        return results, time_points, cmap
+
+    def solve_transient_adaptive(self, t_start: float, t_stop: float, dt_init: float = None,
+                                 dt_min: float = None, dt_max: float = None, lte_tol: float = 1e-4,
+                                 method: str = "trapezoidal", uic: bool = False,
+                                 max_steps: int = 200000) -> Tuple[np.ndarray, List[float], Dict[str, int]]:
+        """
+        Transient simulation with adaptive timestep control.
+
+        The local truncation error of each candidate step is estimated by
+        step-doubling: the step is solved once at h and again as two h/2
+        substeps; for an integrator of order p the difference scales the
+        true error by (2^p - 1). Steps exceeding lte_tol are rejected and
+        halved (down to dt_min); comfortably accurate steps grow the next
+        step (up to dt_max). The two-substep solution, which is the more
+        accurate one, is the accepted result.
+
+        Returns (results, time_points, cmap) like solve_transient; the time
+        grid is non-uniform.
+        """
+        if t_stop <= t_start:
+            raise ValueError(f"t_stop ({t_stop}) must be greater than t_start ({t_start})")
+        if lte_tol <= 0.0:
+            raise ValueError(f"lte_tol must be positive, got {lte_tol}")
+
+        span = t_stop - t_start
+        if dt_init is None:
+            dt_init = span / 100.0
+        if dt_max is None:
+            dt_max = span / 10.0
+        if dt_min is None:
+            dt_min = span * 1e-9
+        if dt_init <= 0.0 or dt_min <= 0.0 or dt_max < dt_min:
+            raise ValueError("Adaptive timestep bounds must satisfy 0 < dt_min <= dt_max and dt_init > 0")
+
+        order = 2.0 if method == "trapezoidal" else 1.0
+        err_scale = (2.0 ** order) - 1.0
+
+        nets_list, net_map, volt_comps = self._get_nets_and_mappings()
+        size = len(net_map) + len(volt_comps)
+
+        x, cmap = self.solve_dc()
+        if uic:
+            x = np.zeros(size)
+
+        history = {"integration_method": method}
+        self.init_energy_storage_history(x, history)
+
+        xs = [x.copy()]
+        ts = [t_start]
+        t = t_start
+        h = min(dt_init, dt_max)
+
+        accepted = 0
+        rejected = 0
+        total_nr = 0
+        h_min_used = float("inf")
+        h_max_used = 0.0
+
+        while t < t_stop - 1e-15:
+            if accepted + rejected >= max_steps:
+                raise ValueError(f"Adaptive transient exceeded {max_steps} steps; loosen lte_tol or raise dt_min")
+
+            h = min(h, t_stop - t)
+
+            # Candidate 1: single full step from the current state
+            x_full, it_full, _ = self.newton_transient_step(t + h, h, history, x)
+
+            # Candidate 2: two half steps on a checkpointed history copy
+            hist_half = dict(history)
+            x_h1, it_h1, _ = self.newton_transient_step(t + h / 2.0, h / 2.0, hist_half, x)
+            self.update_energy_storage_history(x_h1, h / 2.0, hist_half, method=method)
+            x_h2, it_h2, _ = self.newton_transient_step(t + h, h / 2.0, hist_half, x_h1)
+            total_nr += it_full + it_h1 + it_h2
+
+            err = float(np.linalg.norm(x_h2 - x_full)) / err_scale
+
+            if err <= lte_tol or h <= dt_min * (1.0 + 1e-9):
+                # Accept the two-substep result and its companion history
+                self.update_energy_storage_history(x_h2, h / 2.0, hist_half, method=method)
+                history = hist_half
+                t += h
+                x = x_h2
+                xs.append(x.copy())
+                ts.append(t)
+                accepted += 1
+                h_min_used = min(h_min_used, h)
+                h_max_used = max(h_max_used, h)
+                if err < 0.25 * lte_tol:
+                    h = min(h * 2.0, dt_max)
+            else:
+                rejected += 1
+                h = max(h / 2.0, dt_min)
+
+        results = np.column_stack(xs)
+
+        self.last_solve_stats = {
+            "analysis": "transient_adaptive",
+            "matrix_size": size,
+            "method": method,
+            "timesteps": accepted,
+            "rejected_steps": rejected,
+            "newton_iterations": total_nr,
+            "lte_tol": lte_tol,
+            "dt_min_used": h_min_used,
+            "dt_max_used": h_max_used
+        }
+
+        return results, ts, cmap
+
+    def solve_dc_sweep(self, component_id: str, param_name: str, start: float, stop: float,
+                       points: int = 25) -> Tuple[List[float], np.ndarray, Dict[str, int]]:
+        """
+        Sweeps one component parameter across a linear range and computes the
+        DC operating point at each value (SPICE '.dc' analysis). The swept
+        parameter is restored afterwards. Returns (values, results, cmap)
+        where results is a (size x points) matrix of operating points.
+        """
+        points = int(points)
+        if points < 2:
+            raise ValueError(f"DC sweep needs at least 2 points, got {points}")
+
+        node = next((n for n in self.nodes if n["id"] == component_id), None)
+        if node is None:
+            raise ValueError(f"Component '{component_id}' not found for DC sweep")
+
+        params = node.setdefault("params", {})
+        had_param = param_name in params
+        original = params.get(param_name)
+
+        values = [float(v) for v in np.linspace(start, stop, points)]
+        _, net_map, volt_comps = self._get_nets_and_mappings()
+        size = len(net_map) + len(volt_comps)
+        results = np.zeros((size, points))
+
+        cmap: Dict[str, int] = {}
+        total_iterations = 0
+        all_converged = True
+        try:
+            for k, value in enumerate(values):
+                params[param_name] = value
+                x, cmap = self.solve_dc()
+                results[:, k] = x
+                total_iterations += self.last_solve_stats["newton_iterations"]
+                all_converged = all_converged and self.last_solve_stats["converged"]
+        finally:
+            if had_param:
+                params[param_name] = original
+            else:
+                params.pop(param_name, None)
+
+        self.last_solve_stats = {
+            "analysis": "dc_sweep",
+            "matrix_size": size,
+            "points": points,
+            "component": component_id,
+            "param": param_name,
+            "newton_iterations": total_iterations,
+            "converged": all_converged
+        }
+
+        return values, results, cmap
+
+    def solve_monte_carlo(self, runs: int = 100, seed: Optional[int] = None,
+                          distribution: str = "uniform") -> Tuple[Dict[str, np.ndarray], Dict[str, int]]:
+        """
+        Monte Carlo tolerance analysis of the DC operating point.
+
+        Every component whose params carry a positive 'tol' (fractional,
+        e.g. 0.05 for +/-5%) has its primary value parameter (R, C, L, V,
+        or I) re-sampled per run: uniformly within +/-tol, or gaussian
+        with sigma = tol/3 so the tolerance is the 3-sigma bound. Nominal
+        values are restored afterwards.
+
+        Returns ({"samples", "mean", "std", "min", "max"}, cmap) where
+        samples is (size x runs) and the statistics are per-variable.
+        """
+        runs = int(runs)
+        if runs < 2:
+            raise ValueError(f"Monte Carlo needs at least 2 runs, got {runs}")
+        if distribution not in ("uniform", "gaussian"):
+            raise ValueError(f"Unknown distribution {distribution!r}; use 'uniform' or 'gaussian'")
+
+        rng = np.random.default_rng(seed)
+
+        toleranced = []
+        for node in self.nodes:
+            spec = PRIMARY_VALUE_PARAMS.get(node["type"])
+            if spec is None:
+                continue
+            key, default = spec
+            params = node.setdefault("params", {})
+            tol = float(params.get("tol", 0.0))
+            if tol > 0.0:
+                toleranced.append((params, key, float(params.get(key, default)), tol))
+
+        if not toleranced:
+            raise ValueError(
+                "Monte Carlo requires at least one component with a positive 'tol' parameter"
+            )
+
+        _, net_map, volt_comps = self._get_nets_and_mappings()
+        size = len(net_map) + len(volt_comps)
+        samples = np.zeros((size, runs))
+
+        cmap: Dict[str, int] = {}
+        total_iterations = 0
+        all_converged = True
+        try:
+            for r in range(runs):
+                for params, key, nominal, tol in toleranced:
+                    if distribution == "gaussian":
+                        factor = 1.0 + rng.normal(0.0, tol / 3.0)
+                    else:
+                        factor = 1.0 + rng.uniform(-tol, tol)
+                    # Guard against non-physical sign flips from gaussian tails
+                    params[key] = nominal * max(factor, 1e-3)
+                x, cmap = self.solve_dc()
+                samples[:, r] = x
+                total_iterations += self.last_solve_stats["newton_iterations"]
+                all_converged = all_converged and self.last_solve_stats["converged"]
+        finally:
+            for params, key, nominal, _tol in toleranced:
+                params[key] = nominal
+
+        self.last_solve_stats = {
+            "analysis": "monte_carlo",
+            "matrix_size": size,
+            "runs": runs,
+            "toleranced_components": len(toleranced),
+            "distribution": distribution,
+            "newton_iterations": total_iterations,
+            "converged": all_converged
+        }
+
+        stats = {
+            "samples": samples,
+            "mean": samples.mean(axis=1),
+            "std": samples.std(axis=1),
+            "min": samples.min(axis=1),
+            "max": samples.max(axis=1)
+        }
+        return stats, cmap
+
+    def _assemble_ac(self, omega: float, x_op: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Assembles the complex-valued small-signal MNA system at angular
+        frequency omega, with nonlinear elements linearized around the DC
+        operating point x_op.
+        """
+        nets_list, net_map, volt_comps = self._get_nets_and_mappings()
+        num_nets = len(net_map)
+        size = num_nets + len(volt_comps)
+
+        A = np.zeros((size, size), dtype=complex)
+        z = np.zeros(size, dtype=complex)
+
+        volt_map = {comp["id"]: num_nets + i for i, comp in enumerate(volt_comps)}
+
+        for idx in range(num_nets):
+            A[idx, idx] += self.g_min
+
+        def pin_index(pins: Dict[str, str], pin_name: str) -> Optional[int]:
+            return net_map.get(pins.get(pin_name, "n0"))
+
+        # AC drive selection: sources carrying an explicit ac_mag are driven;
+        # if none declares one, the first voltage source is driven at 1V
+        # so an unannotated circuit still produces a transfer function.
+        has_explicit_drive = any(
+            "ac_mag" in node.get("params", {})
+            for node in self.nodes
+            if node["type"] in ("voltage_source", "current_source")
+        )
+        implicit_drive_id = None
+        if not has_explicit_drive:
+            for node in self.nodes:
+                if node["type"] == "voltage_source":
+                    implicit_drive_id = node["id"]
+                    break
+
+        def ac_drive(node: Dict[str, Any]) -> complex:
+            params = node.get("params", {})
+            if "ac_mag" in params:
+                mag = float(params["ac_mag"])
+                phase_deg = float(params.get("ac_phase", 0.0))
+                return mag * complex(math.cos(math.radians(phase_deg)),
+                                     math.sin(math.radians(phase_deg)))
+            if node["id"] == implicit_drive_id:
+                return complex(1.0, 0.0)
+            return complex(0.0, 0.0)
+
         for node in self.nodes:
             n_type = node["type"]
             n_id = node["id"]
             pins = node.get("pins", {})
-            na = pins.get("a", "n0")
-            nb = pins.get("b", "n0")
-            ia = net_map.get(na)
-            ib = net_map.get(nb)
-            
-            if n_type == "capacitor":
-                v_cap = (x[ia] if ia is not None else 0.0) - (x[ib] if ib is not None else 0.0)
-                history[f"{n_id}_v"] = v_cap
-                history[f"{n_id}_i"] = 0.0  # Initial current is 0
+            params = node.get("params", {})
+
+            if n_type == "resistor":
+                r_val = _positive_param(params, "R", 1000.0, n_id)
+                _stamp_conductance(A, pin_index(pins, "a"), pin_index(pins, "b"), 1.0 / r_val)
+
             elif n_type == "inductor":
-                history[f"{n_id}_v"] = 0.0
-                history[f"{n_id}_i"] = 0.0
-                
-        # Main transient integration loop
-        t = t_start
-        for step in range(1, steps + 1):
-            t += dt
-            time_points.append(t)
-            
-            # Newton-Raphson loop for each transient step
-            x_prev = results[:, step - 1]
-            x_curr = x_prev.copy()
-            
-            for nr_iter in range(80):
-                A, z, _ = self.assemble_mna(t, dt, history, prev_x=x_curr)
-                x_next = np.linalg.solve(A, z)
-                
-                # Check convergence
-                diff = np.linalg.norm(x_next - x_curr)
-                x_curr = x_next
-                if diff < 1e-6:
-                    break
-            
-            # Save results
-            results[:, step] = x_curr
-            
-            # Update history states
-            for node in self.nodes:
-                n_type = node["type"]
-                n_id = node["id"]
-                pins = node.get("pins", {})
-                params = node.get("params", {})
-                na = pins.get("a", "n0")
-                nb = pins.get("b", "n0")
-                ia = net_map.get(na)
-                ib = net_map.get(nb)
-                
-                if n_type == "capacitor":
-                    c_val = float(params.get("C", 1e-6))
-                    v_new = (x_curr[ia] if ia is not None else 0.0) - (x_curr[ib] if ib is not None else 0.0)
-                    v_old = history[f"{n_id}_v"]
-                    
-                    # Compute current flowing through capacitor
-                    if method == "trapezoidal":
-                        g_eq = 2.0 * c_val / dt
-                        i_cap = g_eq * (v_new - v_old) - history[f"{n_id}_i"]
-                    else:
-                        g_eq = c_val / dt
-                        i_cap = g_eq * (v_new - v_old)
-                        
-                    history[f"{n_id}_v"] = v_new
-                    history[f"{n_id}_i"] = i_cap
-                    
-                elif n_type == "inductor":
-                    l_val = float(params.get("L", 1e-3))
-                    v_new = (x_curr[ia] if ia is not None else 0.0) - (x_curr[ib] if ib is not None else 0.0)
-                    v_old = history[f"{n_id}_v"]
-                    i_old = history[f"{n_id}_i"]
-                    
-                    if method == "trapezoidal":
-                        g_eq = dt / (2.0 * l_val)
-                        i_ind = g_eq * (v_new + v_old) + i_old
-                    else:
-                        g_eq = dt / l_val
-                        i_ind = g_eq * v_new + i_old
-                        
-                    history[f"{n_id}_v"] = v_new
-                    history[f"{n_id}_i"] = i_ind
-                    
-        return results, time_points, cmap
+                l_val = _positive_param(params, "L", 1e-3, n_id)
+                _stamp_conductance(A, pin_index(pins, "a"), pin_index(pins, "b"), 1.0 / (1j * omega * l_val))
+
+            elif n_type == "diode":
+                # Small-signal conductance at the DC operating point
+                ia = pin_index(pins, "anode")
+                ic = pin_index(pins, "cathode")
+                Is = float(params.get("Is", 1e-14))
+                N = float(params.get("N", 1.0))
+                Vt = float(params.get("Vt", 0.02585))
+
+                v_a = x_op[ia] if ia is not None else 0.0
+                v_c = x_op[ic] if ic is not None else 0.0
+                v_d = max(-10.0, min(v_a - v_c, 2.0))
+                g_d = (Is / (N * Vt)) * math.exp(v_d / (N * Vt))
+                _stamp_conductance(A, ia, ic, g_d)
+
+            elif n_type == "current_source":
+                # Injects only its declared AC magnitude (DC value is bias)
+                _stamp_current_injection(z, pin_index(pins, "a"), pin_index(pins, "b"), -ac_drive(node))
+
+            elif n_type == "voltage_source":
+                br_idx = volt_map[n_id]
+                ia = pin_index(pins, "a")
+                ib = pin_index(pins, "b")
+                _require_wired_branch(n_id, n_type, ia, ib)
+                _stamp_voltage_branch(A, ia, ib, br_idx)
+                z[br_idx] = ac_drive(node)
+
+            elif n_type == "opamp":
+                ini = pin_index(pins, "non_inverting")
+                iinv = pin_index(pins, "inverting")
+                iout = pin_index(pins, "out")
+
+                gain = float(params.get("gain", 1e5))
+                Rin = _positive_param(params, "Rin", 1e6, n_id)
+                Rout = float(params.get("Rout", 50.0))
+
+                _stamp_conductance(A, ini, iinv, 1.0 / Rin)
+
+                br_idx = volt_map[n_id]
+                _stamp_voltage_branch(A, iout, None, br_idx)
+                if ini is not None:
+                    A[br_idx, ini] -= gain
+                if iinv is not None:
+                    A[br_idx, iinv] += gain
+                A[br_idx, br_idx] -= Rout
+                z[br_idx] = 0.0
+
+            elif n_type in ("nmos", "pmos"):
+                # Small-signal gm/gds at the DC operating point
+                self._stamp_mos(A, None, node, x_op)
+
+            elif n_type in ("bjt_npn", "bjt_pnp"):
+                self._stamp_bjt(A, None, node, x_op)
+
+            elif n_type in ("vcvs", "vccs", "cccs", "ccvs"):
+                self._stamp_controlled_source(A, node, net_map, volt_map)
+
+            elif n_type == "digital_interface_out":
+                # A driven rail is an AC ground
+                br_idx = volt_map[n_id]
+                ia = pin_index(pins, "analog_out")
+                _require_wired_branch(n_id, n_type, ia, None)
+                _stamp_voltage_branch(A, ia, None, br_idx)
+                z[br_idx] = 0.0
+
+            # jwC admittance for explicit capacitors and implicit device
+            # capacitances (diode Cj0, MOSFET Cgs/Cgd)
+            for _key, pa, pb, c_val in self._capacitive_elements(node):
+                _stamp_conductance(A, pin_index(pins, pa), pin_index(pins, pb), 1j * omega * c_val)
+
+        return A, z
+
+    def solve_ac(self, f_start: float, f_stop: float, points_per_decade: int = 20) -> Tuple[List[float], np.ndarray, np.ndarray, Dict[str, int]]:
+        """
+        Computes the small-signal frequency response over a logarithmic sweep.
+
+        The circuit is linearized at its DC operating point, then a complex
+        MNA system is solved per frequency point. Sources with an 'ac_mag'
+        parameter drive the sweep (magnitude + 'ac_phase' degrees); without
+        any, the first voltage source is driven at 1V so results read
+        directly as the transfer function.
+
+        Returns:
+            (frequencies, magnitude_db, phase_deg, complete_index_map)
+            where magnitude_db and phase_deg are (size x num_points) arrays.
+        """
+        if f_start <= 0.0:
+            raise ValueError(f"AC sweep f_start must be positive, got {f_start}")
+        if f_stop <= f_start:
+            raise ValueError(f"AC sweep f_stop ({f_stop}) must be greater than f_start ({f_start})")
+        if points_per_decade < 1:
+            raise ValueError(f"points_per_decade must be at least 1, got {points_per_decade}")
+
+        # DC operating point for linearization of nonlinear devices
+        x_op, cmap = self.solve_dc()
+
+        nets_list, net_map, volt_comps = self._get_nets_and_mappings()
+        size = len(net_map) + len(volt_comps)
+
+        decades = math.log10(f_stop / f_start)
+        num_points = max(2, int(math.ceil(decades * points_per_decade)) + 1)
+        freqs = list(np.logspace(math.log10(f_start), math.log10(f_stop), num_points))
+
+        magnitude_db = np.zeros((size, num_points))
+        phase_deg = np.zeros((size, num_points))
+
+        for k, freq in enumerate(freqs):
+            A, z = self._assemble_ac(2.0 * math.pi * freq, x_op)
+            x = np.linalg.solve(A, z)
+            magnitude_db[:, k] = 20.0 * np.log10(np.maximum(np.abs(x), 1e-18))
+            phase_deg[:, k] = np.degrees(np.angle(x))
+
+        self.last_solve_stats = {
+            "analysis": "ac",
+            "matrix_size": size,
+            "points": num_points,
+            "f_start": f_start,
+            "f_stop": f_stop
+        }
+
+        return freqs, magnitude_db, phase_deg, cmap
+
+    def dc_operating_report(self, x: np.ndarray) -> Dict[str, Dict[str, float]]:
+        """
+        Derives per-component operating-point quantities (voltage, current,
+        power) from a solved DC vector x. Branch currents follow the MNA
+        convention: positive current flows into the source's positive pin,
+        so a delivering source reports negative current and power.
+        """
+        nets_list, net_map, volt_comps = self._get_nets_and_mappings()
+        volt_map = {comp["id"]: len(net_map) + i for i, comp in enumerate(volt_comps)}
+
+        def net_voltage(pins: Dict[str, str], pin_name: str) -> float:
+            idx = net_map.get(pins.get(pin_name, "n0"))
+            return float(x[idx]) if idx is not None else 0.0
+
+        report: Dict[str, Dict[str, float]] = {}
+        for node in self.nodes:
+            n_type = node["type"]
+            n_id = node["id"]
+            pins = node.get("pins", {})
+            params = node.get("params", {})
+
+            if n_type == "resistor":
+                v = net_voltage(pins, "a") - net_voltage(pins, "b")
+                i = v / _positive_param(params, "R", 1000.0, n_id)
+                report[n_id] = {"v": v, "i": i, "p": v * i}
+            elif n_type == "diode":
+                v_d = net_voltage(pins, "anode") - net_voltage(pins, "cathode")
+                Is = float(params.get("Is", 1e-14))
+                N = float(params.get("N", 1.0))
+                Vt = float(params.get("Vt", 0.02585))
+                v_lim = max(-10.0, min(v_d, 2.0))
+                i = Is * (math.exp(v_lim / (N * Vt)) - 1.0)
+                report[n_id] = {"v": v_d, "i": i, "p": v_d * i}
+            elif n_type == "voltage_source":
+                v = net_voltage(pins, "a") - net_voltage(pins, "b")
+                i = float(x[volt_map[n_id]])
+                report[n_id] = {"v": v, "i": i, "p": v * i}
+            elif n_type == "current_source":
+                v = net_voltage(pins, "a") - net_voltage(pins, "b")
+                i = float(params.get("I", 0.0))
+                report[n_id] = {"v": v, "i": i, "p": v * i}
+            elif n_type == "capacitor":
+                v = net_voltage(pins, "a") - net_voltage(pins, "b")
+                report[n_id] = {"v": v, "i": 0.0, "p": 0.0}
+            elif n_type == "opamp":
+                v_out = net_voltage(pins, "out")
+                i_out = float(x[volt_map[n_id]])
+                report[n_id] = {"v": v_out, "i": i_out, "p": v_out * i_out}
+            elif n_type in ("vcvs", "ccvs"):
+                v = net_voltage(pins, "p") - net_voltage(pins, "n")
+                i = float(x[volt_map[n_id]])
+                report[n_id] = {"v": v, "i": i, "p": v * i}
+            elif n_type == "vccs":
+                v = net_voltage(pins, "p") - net_voltage(pins, "n")
+                i = float(params.get("gm", 1e-3)) * (net_voltage(pins, "cp") - net_voltage(pins, "cn"))
+                report[n_id] = {"v": v, "i": i, "p": v * i}
+            elif n_type == "cccs":
+                v = net_voltage(pins, "p") - net_voltage(pins, "n")
+                control = params.get("control")
+                i_ctrl = float(x[volt_map[control]]) if control in volt_map else 0.0
+                i = float(params.get("gain", 1.0)) * i_ctrl
+                report[n_id] = {"v": v, "i": i, "p": v * i}
+            elif n_type in ("nmos", "pmos"):
+                ss = self._mos_small_signal(node, x)
+                report[n_id] = {
+                    "vgs": ss["vgs"], "vds": ss["vds"], "i": ss["i_d"],
+                    "gm": ss["gm"], "p": ss["vds"] * ss["i_d"]
+                }
+            elif n_type in ("bjt_npn", "bjt_pnp"):
+                ss = self._bjt_small_signal(node, x)
+                i_c, i_b, _ = ss["i_terms"]
+                report[n_id] = {
+                    "vbe": ss["vbe"], "vce": ss["vce"],
+                    "ic": i_c, "ib": i_b,
+                    "p": ss["vce"] * i_c
+                }
+
+        return report
 
     def assemble_mesh(self) -> Tuple[np.ndarray, np.ndarray, List[List[str]]]:
         """
@@ -542,22 +1400,25 @@ class ContinuousSolver:
             adj[na].append((nb, br_id))
             adj[nb].append((na, br_id))
 
-        # Run DFS to find Spanning Forest
+        # Run an iterative DFS to find the spanning forest (recursion would
+        # overflow the interpreter stack on large net chains)
         visited_nets = set()
         tree_edges = set()
         parent_map = {}  # net -> (parent_net, branch_id)
-        
-        def dfs(u):
-            visited_nets.add(u)
-            for v, br_id in adj[u]:
-                if v not in visited_nets:
-                    tree_edges.add(br_id)
-                    parent_map[v] = (u, br_id)
-                    dfs(v)
-                    
+
         for net in nets_list:
-            if net not in visited_nets:
-                dfs(net)
+            if net in visited_nets:
+                continue
+            visited_nets.add(net)
+            stack = [net]
+            while stack:
+                u = stack.pop()
+                for v, br_id in adj[u]:
+                    if v not in visited_nets:
+                        visited_nets.add(v)
+                        tree_edges.add(br_id)
+                        parent_map[v] = (u, br_id)
+                        stack.append(v)
                 
         # Locate Cotree edges (fundamental loops)
         cotree_branches = []
@@ -671,6 +1532,45 @@ class DiscreteEventScheduler:
         self.event_counter = 0
         self.states: Dict[str, Any] = {}
         self.output_logs: Dict[str, List[Tuple[float, Any]]] = {}
+        self._topology_source: Any = None
+        self._topology: Any = None
+
+    def _build_gate_topology(self, netlist_comps: List[Dict[str, Any]]) -> Tuple[Dict, Dict, Dict, Dict]:
+        """
+        Builds gate pin/net lookup maps plus a net -> listening-gates index.
+        Cached per netlist list object: the co-simulator calls run_until
+        repeatedly with the same component list, and the topology (pins/nets)
+        must not change between those calls.
+        """
+        if self._topology_source is netlist_comps:
+            return self._topology
+
+        gate_inputs: Dict[str, Dict[str, str]] = {}   # node_id -> {pin_name: net_name}
+        gate_outputs: Dict[str, Dict[str, str]] = {}  # node_id -> {pin_name: net_name}
+        gate_by_id: Dict[str, Dict[str, Any]] = {}
+        net_listeners: Dict[str, List[str]] = {}      # net_name -> [gate ids reading it]
+
+        for node in netlist_comps:
+            n_id = node["id"]
+            n_type = node["type"]
+            if not n_type.startswith("digital_"):
+                continue
+            gate_by_id[n_id] = node
+            gate_inputs[n_id] = {}
+            gate_outputs[n_id] = {}
+
+            for pin, net in node.get("pins", {}).items():
+                if pin in ("out", "q", "q_bar"):
+                    gate_outputs[n_id][pin] = net
+                else:
+                    gate_inputs[n_id][pin] = net
+                    listeners = net_listeners.setdefault(net, [])
+                    if n_id not in listeners:
+                        listeners.append(n_id)
+
+        self._topology_source = netlist_comps
+        self._topology = (gate_inputs, gate_outputs, gate_by_id, net_listeners)
+        return self._topology
 
     def schedule_event(self, t: float, node_id: str, val: Any) -> None:
         """
@@ -735,57 +1635,32 @@ class DiscreteEventScheduler:
         Processes scheduled event queue transitions until t_limit.
         Evaluates interconnected gates on output mutations.
         """
-        # Map net links for quick traversal
-        gate_inputs: Dict[str, Dict[str, str]] = {}  # node_id -> {pin_name: net_name}
-        gate_outputs: Dict[str, Dict[str, str]] = {}  # node_id -> {pin_name: net_name}
-        gate_by_id: Dict[str, Dict[str, Any]] = {}
-        
-        for node in netlist_comps:
-            n_id = node["id"]
-            n_type = node["type"]
-            if not n_type.startswith("digital_"):
-                continue
-            gate_by_id[n_id] = node
-            gate_inputs[n_id] = {}
-            gate_outputs[n_id] = {}
-            
-            for pin, net in node.get("pins", {}).items():
-                if pin in ("out", "q", "q_bar"):
-                    gate_outputs[n_id][pin] = net
-                else:
-                    gate_inputs[n_id][pin] = net
+        gate_inputs, gate_outputs, gate_by_id, net_listeners = self._build_gate_topology(netlist_comps)
 
         # Main timeline scheduler loop
         while self.queue and self.queue[0][0] <= t_limit:
             t, _, target_net, new_val = heapq.heappop(self.queue)
-            
+
             # Skip redundant states
             if self.states.get(target_net) == new_val:
                 continue
-                
+
             self.states[target_net] = new_val
-            if target_net not in self.output_logs:
-                self.output_logs[target_net] = []
-            self.output_logs[target_net].append((t, new_val))
-            
-            # Find downstream gates that use this mutated net as an input
-            for g_id, inputs_map in gate_inputs.items():
-                if target_net in inputs_map.values():
-                    # Formulate input state dict
-                    curr_input_states = {}
-                    for pin, net in inputs_map.items():
-                        curr_input_states[pin] = self.states.get(net, "0")
-                        
-                    gate = gate_by_id[g_id]
-                    t_d = float(gate.get("params", {}).get("delay", 1e-9))
-                    
-                    # Evaluate outputs
-                    out_val = self.evaluate_gate(gate["type"], curr_input_states, gate.get("params", {}))
-                    
-                    # Schedule future output updates
-                    for out_pin, out_net in gate_outputs[g_id].items():
-                        self.schedule_event(t + t_d, out_net, out_val)
-                        
+            self.output_logs.setdefault(target_net, []).append((t, new_val))
+
+            # Re-evaluate downstream gates that read this mutated net
+            for g_id in net_listeners.get(target_net, ()):
+                inputs_map = gate_inputs[g_id]
+                curr_input_states = {pin: self.states.get(net, "0") for pin, net in inputs_map.items()}
+
+                gate = gate_by_id[g_id]
+                t_d = float(gate.get("params", {}).get("delay", 1e-9))
+
+                # Evaluate outputs and schedule future updates
+                out_val = self.evaluate_gate(gate["type"], curr_input_states, gate.get("params", {}))
+                for out_pin, out_net in gate_outputs[g_id].items():
+                    self.schedule_event(t + t_d, out_net, out_val)
+
         return self.output_logs
 
 
@@ -802,35 +1677,19 @@ class MixedSignalCoSimulator:
         """
         Performs synchronized continuous-discrete progression.
         """
-        nets_list, net_map, volt_comps = self.analog._get_nets_and_mappings()
-        size = len(net_map) + len(volt_comps)
-        
+        _, net_map, _ = self.analog._get_nets_and_mappings()
+
         t = t_start
         analog_results = []
         analog_times = []
-        
+
         # Initial analog state
         x, cmap = self.analog.solve_dc()
         analog_results.append(x.copy())
         analog_times.append(t)
-        
+
         history = {"integration_method": "backward_euler"}
-        
-        # Initialize capacitor/inductor companion histories
-        for node in self.analog.nodes:
-            n_type = node["type"]
-            n_id = node["id"]
-            pins = node.get("pins", {})
-            ia = net_map.get(pins.get("a", "n0"))
-            ib = net_map.get(pins.get("b", "n0"))
-            
-            if n_type == "capacitor":
-                v_cap = (x[ia] if ia is not None else 0.0) - (x[ib] if ib is not None else 0.0)
-                history[f"{n_id}_v"] = v_cap
-                history[f"{n_id}_i"] = 0.0
-            elif n_type == "inductor":
-                history[f"{n_id}_v"] = 0.0
-                history[f"{n_id}_i"] = 0.0
+        self.analog.init_energy_storage_history(x, history)
 
         # Boundary Interface Mappings
         # Digital outputs drive analog voltage sources.
@@ -868,17 +1727,11 @@ class MixedSignalCoSimulator:
                     dt = base_dt  # safety override to progress clock
                     
             t_next = t + dt
-            
+
             # Solve analog MNA step
-            x_curr = x.copy()
-            for nr_iter in range(50):
-                A, z, _ = self.analog.assemble_mna(t_next, dt, history, prev_x=x_curr)
-                x_next = np.linalg.solve(A, z)
-                diff = np.linalg.norm(x_next - x_curr)
-                x_curr = x_next
-                if diff < 1e-6:
-                    break
-                    
+            x_curr, _, _ = self.analog.newton_transient_step(t_next, dt, history, x, max_iter=50)
+
+
             # Check comparator crossings
             for comp in boundary_comparators:
                 ref_v = float(comp["params"].get("threshold", 2.5))
@@ -906,30 +1759,9 @@ class MixedSignalCoSimulator:
             t = t_next
             analog_results.append(x.copy())
             analog_times.append(t)
-            
-            # Update capacitor/inductor transient histories
-            for node in self.analog.nodes:
-                n_type = node["type"]
-                n_id = node["id"]
-                pins = node.get("pins", {})
-                ia = net_map.get(pins.get("a", "n0"))
-                ib = net_map.get(pins.get("b", "n0"))
-                
-                if n_type == "capacitor":
-                    c_val = float(node["params"].get("C", 1e-6))
-                    v_new = (x[ia] if ia is not None else 0.0) - (x[ib] if ib is not None else 0.0)
-                    v_old = history[f"{n_id}_v"]
-                    i_cap = (c_val / dt) * (v_new - v_old)
-                    history[f"{n_id}_v"] = v_new
-                    history[f"{n_id}_i"] = i_cap
-                elif n_type == "inductor":
-                    l_val = float(node["params"].get("L", 1e-3))
-                    v_new = (x[ia] if ia is not None else 0.0) - (x[ib] if ib is not None else 0.0)
-                    v_old = history[f"{n_id}_v"]
-                    i_old = history[f"{n_id}_i"]
-                    i_ind = (dt / l_val) * v_new + i_old
-                    history[f"{n_id}_v"] = v_new
-                    history[f"{n_id}_i"] = i_ind
+
+            # Update capacitor/inductor transient histories (backward Euler)
+            self.analog.update_energy_storage_history(x, dt, history)
 
         # Final digital processing
         self.digital.run_until(t_stop, self.analog.nodes)

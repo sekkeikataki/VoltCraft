@@ -61,9 +61,181 @@ class VoltCraftSimulatorView {
             this.plotDC(data);
         } else if (mode === "transient") {
             this.plotTransient(data);
+        } else if (mode === "dc_sweep") {
+            this.plotSweep(data);
+        } else if (mode === "monte_carlo") {
+            this.plotMonteCarlo(data);
+        } else if (mode === "ac") {
+            this.plotAC(data);
         } else if (mode === "mixed") {
             this.plotMixed(data);
         }
+    }
+
+    plotMonteCarlo(data) {
+        // One row per probed variable: full min..max range bar, a thicker
+        // mean +/- sigma band, and a mean tick with the numbers alongside
+        const w = this.analogSvg.clientWidth || 380;
+        const h = this.analogSvg.clientHeight || 200;
+        const cmap = data.cmap;
+
+        const probed = Object.keys(cmap).filter(k => k !== "n0" && appStore.probes.has(k));
+        if (probed.length === 0) return;
+
+        const rowH = Math.min(44, (h - 30) / probed.length);
+        const xL = 60;
+        const xR = w - 130;
+
+        probed.forEach((key, idx) => {
+            const i = cmap[key];
+            const lo = data.min[i], hi = data.max[i];
+            const mean = data.mean[i], sd = data.std[i];
+            const span = (hi - lo) || 1.0;
+            const toX = (v) => xL + ((v - lo) / span) * (xR - xL);
+            const yMid = 20 + idx * rowH + rowH / 2;
+            const color = this.colors[idx % this.colors.length];
+
+            const mk = (tag, attrs) => {
+                const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+                Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+                this.analogSvg.appendChild(el);
+                return el;
+            };
+
+            mk("line", { x1: toX(lo), y1: yMid, x2: toX(hi), y2: yMid, stroke: color, "stroke-width": "1.5", opacity: "0.5" });
+            mk("rect", { x: toX(mean - sd), y: yMid - 4, width: Math.max(1, toX(mean + sd) - toX(mean - sd)), height: 8, fill: color, opacity: "0.35", rx: 2 });
+            mk("line", { x1: toX(mean), y1: yMid - 7, x2: toX(mean), y2: yMid + 7, stroke: color, "stroke-width": "2.5" });
+
+            const label = mk("text", { x: 5, y: yMid + 3, fill: color, "font-size": "9px", "font-weight": "600" });
+            label.textContent = this.probeLabel(key);
+            const valTxt = mk("text", { x: xR + 8, y: yMid + 3, fill: "#94a3b8", "font-size": "8px" });
+            valTxt.textContent = `${mean.toFixed(3)} ±${sd.toFixed(3)} [${lo.toFixed(2)}, ${hi.toFixed(2)}]`;
+        });
+    }
+
+    probeLabel(key) {
+        // Branch keys hold component currents; nets hold voltages
+        return key.startsWith("branch_") ? `I(${key.slice(7)})` : key;
+    }
+
+    formatHz(f) {
+        if (f >= 1e9) return `${(f / 1e9).toFixed(0)}GHz`;
+        if (f >= 1e6) return `${(f / 1e6).toFixed(0)}MHz`;
+        if (f >= 1e3) return `${(f / 1e3).toFixed(0)}kHz`;
+        return `${f.toFixed(0)}Hz`;
+    }
+
+    drawLogFrequencyGrid(targetSvg, w, h, logMin, logMax, yMin, yMax, yUnit) {
+        // Decade vertical gridlines with Hz labels, linear Y gridlines
+        const grid = document.createElementNS("http://www.w3.org/2000/svg", "g");
+
+        for (let d = Math.ceil(logMin); d <= Math.floor(logMax); d++) {
+            const gx = 40 + ((d - logMin) / (logMax - logMin)) * (w - 60);
+            const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            line.setAttribute("x1", gx);
+            line.setAttribute("y1", "15");
+            line.setAttribute("x2", gx);
+            line.setAttribute("y2", h - 30);
+            line.setAttribute("stroke", "rgba(255,255,255,0.08)");
+            line.setAttribute("stroke-width", "1");
+            grid.appendChild(line);
+
+            const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            label.textContent = this.formatHz(Math.pow(10, d));
+            label.setAttribute("x", gx - 12);
+            label.setAttribute("y", h - 15);
+            label.setAttribute("fill", "#64748b");
+            label.setAttribute("font-size", "8px");
+            grid.appendChild(label);
+        }
+
+        const yDivs = 4;
+        for (let i = 0; i <= yDivs; i++) {
+            const ratio = i / yDivs;
+            const gy = h - 30 - ratio * (h - 45);
+            const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            line.setAttribute("x1", "40");
+            line.setAttribute("y1", gy);
+            line.setAttribute("x2", w - 20);
+            line.setAttribute("y2", gy);
+            line.setAttribute("stroke", "rgba(255,255,255,0.05)");
+            line.setAttribute("stroke-width", "1");
+            grid.appendChild(line);
+
+            const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            label.textContent = `${(yMin + ratio * (yMax - yMin)).toFixed(0)}${yUnit}`;
+            label.setAttribute("x", "2");
+            label.setAttribute("y", gy + 3);
+            label.setAttribute("fill", "#64748b");
+            label.setAttribute("font-size", "8px");
+            grid.appendChild(label);
+        }
+
+        targetSvg.appendChild(grid);
+    }
+
+    plotAC(data) {
+        // Bode plot: magnitude (dB) in the analog panel, phase (deg) below
+        const freqs = data.freqs;
+        const cmap = data.cmap;
+        if (!freqs || freqs.length < 2) return;
+
+        const logMin = Math.log10(freqs[0]);
+        const logMax = Math.log10(freqs[freqs.length - 1]);
+
+        const probedNets = Object.keys(cmap).filter(net =>
+            net !== "n0" && appStore.probes.has(net));
+
+        const drawCurves = (svg, series, yMin, yMax, yUnit) => {
+            const w = svg.clientWidth || 380;
+            const h = svg.clientHeight || 180;
+            this.drawLogFrequencyGrid(svg, w, h, logMin, logMax, yMin, yMax, yUnit);
+
+            probedNets.forEach((net, idx) => {
+                const wave = series[cmap[net]];
+                const color = this.colors[idx % this.colors.length];
+
+                let points = "";
+                for (let i = 0; i < freqs.length; i++) {
+                    const px = 40 + ((Math.log10(freqs[i]) - logMin) / (logMax - logMin)) * (w - 60);
+                    const clamped = Math.max(yMin, Math.min(yMax, wave[i]));
+                    const py = h - 30 - ((clamped - yMin) / (yMax - yMin)) * (h - 45);
+                    points += `${px.toFixed(1)},${py.toFixed(1)} `;
+                }
+
+                const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+                polyline.setAttribute("points", points.trim());
+                polyline.setAttribute("fill", "none");
+                polyline.setAttribute("stroke", color);
+                polyline.setAttribute("stroke-width", "2");
+
+                const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                label.textContent = this.probeLabel(net);
+                label.setAttribute("x", w - 50);
+                label.setAttribute("y", 15 + idx * 12);
+                label.setAttribute("fill", color);
+                label.setAttribute("font-size", "9px");
+                label.setAttribute("font-weight", "600");
+
+                svg.appendChild(polyline);
+                svg.appendChild(label);
+            });
+        };
+
+        // Auto-scale magnitude to the probed curves (floor at -100 dB)
+        let magMin = -20.0;
+        let magMax = 10.0;
+        probedNets.forEach(net => {
+            data.magnitude_db[cmap[net]].forEach(v => {
+                if (v > -100 && v < magMin) magMin = v;
+                if (v > magMax) magMax = v;
+            });
+        });
+        magMin = Math.max(-100, Math.floor(magMin / 10) * 10);
+        magMax = Math.ceil(magMax / 10) * 10;
+
+        drawCurves(this.analogSvg, data.magnitude_db, magMin, magMax, "dB");
+        drawCurves(this.digitalSvg, data.phase_deg, -180, 180, "°");
     }
 
     plotDC(data) {
@@ -111,12 +283,19 @@ class VoltCraftSimulatorView {
     }
 
     plotTransient(data) {
+        this.plotLinearCurves(data.times, data.waveforms, data.cmap, "Time (s)");
+    }
+
+    plotSweep(data) {
+        // DC transfer curves: x-axis is the swept parameter value
+        const stats = data.stats || {};
+        const xLabel = stats.component ? `${stats.component}.${stats.param}` : "Sweep value";
+        this.plotLinearCurves(data.values, data.waveforms, data.cmap, xLabel);
+    }
+
+    plotLinearCurves(times, waveforms, cmap, xLabel) {
         const w = this.analogSvg.clientWidth || 380;
         const h = this.analogSvg.clientHeight || 200;
-
-        const times = data.times;
-        const waveforms = data.waveforms;
-        const cmap = data.cmap;
 
         if (!times || times.length === 0) return;
 
@@ -128,9 +307,9 @@ class VoltCraftSimulatorView {
         let vMax = -99999.0;
         
         Object.keys(cmap).forEach(net => {
-            if (net.startsWith("branch_")) return;
+            if (net === "n0") return;
             if (!appStore.probes.has(net)) return;  // Plot only checked probes
-            
+
             const netIdx = cmap[net];
             waveforms[netIdx].forEach(val => {
                 if (val < vMin) vMin = val;
@@ -142,12 +321,12 @@ class VoltCraftSimulatorView {
         if (vMax === -99999.0) vMax = 5.0;
         if (vMin === vMax) { vMin -= 1.0; vMax += 1.0; }
 
-        this.drawGrid(this.analogSvg, w, h, tMin, tMax, vMin, vMax, "Time (s)", "Voltage (V)");
+        this.drawGrid(this.analogSvg, w, h, tMin, tMax, vMin, vMax, xLabel, "Voltage (V)");
 
-        // Plot each active probe curve
+        // Plot each active probe curve (nets and branch currents)
         let colorIdx = 0;
         Object.keys(cmap).forEach(net => {
-            if (net.startsWith("branch_")) return;
+            if (net === "n0") return;
             if (!appStore.probes.has(net)) return;
 
             const netIdx = cmap[net];
@@ -175,7 +354,7 @@ class VoltCraftSimulatorView {
             
             // Add label
             const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-            label.textContent = net;
+            label.textContent = this.probeLabel(net);
             label.setAttribute("x", w - 50);
             label.setAttribute("y", 15 + colorIdx * 12);
             label.setAttribute("fill", color);
@@ -209,7 +388,7 @@ class VoltCraftSimulatorView {
 
             let colorIdx = 0;
             Object.keys(a_map).forEach(net => {
-                if (net.startsWith("branch_")) return;
+                if (net === "n0") return;
                 if (!appStore.probes.has(net)) return;
 
                 const netIdx = a_map[net];

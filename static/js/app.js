@@ -31,6 +31,20 @@ class VoltCraftApp {
         // Bind global UI controls
         document.getElementById("btn-save").addEventListener("click", () => this.saveSchematic());
         document.getElementById("btn-simulate").addEventListener("click", () => this.runSimulation());
+        const csvBtn = document.getElementById("btn-export-csv");
+        if (csvBtn) {
+            csvBtn.addEventListener("click", () => this.exportCsv());
+        }
+
+        // Show the sweep parameter row only in dc_sweep mode
+        document.getElementById("sim-mode").addEventListener("change", (e) => {
+            const sweepRow = document.getElementById("sweep-controls");
+            if (sweepRow) {
+                sweepRow.style.display = e.target.value === "dc_sweep" ? "flex" : "none";
+            }
+        });
+
+        this.bindKeyboardShortcuts();
 
         // Load Default reference circuit
         await this.loadSchematic(this.activeSchematicPath);
@@ -74,18 +88,32 @@ class VoltCraftApp {
         }
     }
 
-    async runSimulation() {
-        const mode = document.getElementById("sim-mode").value;
-        const btn = document.getElementById("btn-simulate");
-        btn.disabled = true;
-        btn.textContent = "SOLVING...";
-
-        const params = {
-            t_stop: mode === "dc" ? 0.0 : mode === "mixed" ? 0.001 : 0.05,
-            dt: mode === "dc" ? 1.0 : mode === "mixed" ? 1e-5 : 0.001,
-            method: "trapezoidal",
-            uic: true
-        };
+    buildSimParams(mode) {
+        let params;
+        if (mode === "ac") {
+            params = { f_start: 1.0, f_stop: 1e6, points_per_decade: 20 };
+        } else if (mode === "monte_carlo") {
+            params = { runs: 200, distribution: "uniform" };
+        } else if (mode === "dc_sweep") {
+            params = {
+                component: document.getElementById("sweep-component").value.trim(),
+                param: document.getElementById("sweep-param").value.trim(),
+                start: parseFloat(document.getElementById("sweep-start").value),
+                stop: parseFloat(document.getElementById("sweep-stop").value),
+                points: parseInt(document.getElementById("sweep-points").value, 10)
+            };
+        } else {
+            params = {
+                t_stop: mode === "dc" ? 0.0 : mode === "mixed" ? 0.001 : 0.05,
+                dt: mode === "dc" ? 1.0 : mode === "mixed" ? 1e-5 : 0.001,
+                method: "trapezoidal",
+                uic: true
+            };
+            if (mode === "transient") {
+                const adaptiveEl = document.getElementById("sim-adaptive");
+                params.adaptive = !!(adaptiveEl && adaptiveEl.checked);
+            }
+        }
 
         // For mixed mode co-sim, add initial step events
         if (mode === "mixed") {
@@ -94,6 +122,16 @@ class VoltCraftApp {
                 { time: 0.0, net: "inv_out", val: "1" }
             ];
         }
+        return params;
+    }
+
+    async runSimulation() {
+        const mode = document.getElementById("sim-mode").value;
+        const btn = document.getElementById("btn-simulate");
+        btn.disabled = true;
+        btn.textContent = "SOLVING...";
+
+        const params = this.buildSimParams(mode);
 
         try {
             const res = await this.postAction("run_simulation", {
@@ -124,6 +162,95 @@ class VoltCraftApp {
         }
     }
 
+    async exportCsv() {
+        const mode = document.getElementById("sim-mode").value;
+        if (mode === "digital" || mode === "mixed") {
+            alert("CSV export supports DC, transient, sweep, AC, and Monte Carlo modes.");
+            return;
+        }
+        try {
+            const res = await this.postAction("export_csv", {
+                path: this.activeSchematicPath,
+                mode: mode,
+                params: this.buildSimParams(mode)
+            });
+            if (res.status !== "ok") {
+                alert(`CSV export failed: ${res.error.message}`);
+                return;
+            }
+            const blob = new Blob([res.data], { type: "text/csv" });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            const base = this.activeSchematicPath.split("/").pop().replace(".vcg.json", "");
+            link.download = `${base}_${mode}.csv`;
+            link.click();
+            URL.revokeObjectURL(link.href);
+            this.logJournal("export_csv", { mode: mode }, res.journal_id);
+        } catch (err) {
+            console.error("[VOLTCRAFT] CSV export error: ", err);
+        }
+    }
+
+    bindKeyboardShortcuts() {
+        document.addEventListener("keydown", (e) => {
+            const tag = e.target.tagName;
+            if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+            const key = e.key.toLowerCase();
+            if ((e.ctrlKey || e.metaKey) && key === "z" && !e.shiftKey) {
+                e.preventDefault();
+                this.undo();
+            } else if ((e.ctrlKey || e.metaKey) && (key === "y" || (key === "z" && e.shiftKey))) {
+                e.preventDefault();
+                this.redo();
+            } else if ((e.key === "Delete" || e.key === "Backspace") && this.designer && this.designer.selectedNodeId) {
+                e.preventDefault();
+                this.deleteSelectedComponent();
+            } else if (e.key === "Escape" && this.designer) {
+                this.designer.placingType = null;
+                this.designer.clearSelection();
+                this.designer.render(this.graph);
+            }
+        });
+    }
+
+    async deleteSelectedComponent() {
+        const nodeId = this.designer.selectedNodeId;
+        try {
+            const res = await this.postAction("delete_node", {
+                path: this.activeSchematicPath,
+                id: nodeId
+            });
+            if (res.status === "ok") {
+                this.designer.clearSelection();
+                this.logJournal("delete_node", { id: nodeId }, res.journal_id);
+                // WebSocket broadcast refreshes the canvas
+            } else {
+                alert(`Delete failed: ${res.error.message}`);
+            }
+        } catch (err) {
+            console.error("[VOLTCRAFT] Error deleting component: ", err);
+        }
+    }
+
+    async updateComponentParams(nodeId, params) {
+        try {
+            const res = await this.postAction("update_params", {
+                path: this.activeSchematicPath,
+                id: nodeId,
+                params: params
+            });
+            if (res.status === "ok") {
+                this.logJournal("update_params", { id: nodeId }, res.journal_id);
+                // WebSocket broadcast refreshes the canvas
+            } else {
+                alert(`Parameter update failed: ${res.error.message}`);
+            }
+        } catch (err) {
+            console.error("[VOLTCRAFT] Error updating parameters: ", err);
+        }
+    }
+
     async postAction(action, params) {
         const response = await fetch("/api/agent/action", {
             method: "POST",
@@ -151,7 +278,7 @@ class VoltCraftApp {
 
         this.websocket.onmessage = (event) => {
             const packet = JSON.parse(event.data);
-            
+
             if (packet.type === "schematic_mutated") {
                 if (packet.path === this.activeSchematicPath) {
                     this.graph = packet.graph;
@@ -159,6 +286,13 @@ class VoltCraftApp {
                 }
             } else if (packet.type === "agent_action_triggered") {
                 this.logJournalWS(packet.agent_id, packet.action, packet.timestamp);
+            }
+
+            // Forward to the agent bridge overlay adapter. Delegating here
+            // (instead of the bridge patching onmessage) keeps the bridge
+            // attached across WebSocket reconnects.
+            if (this.agentBridge) {
+                this.agentBridge.onPacket(packet);
             }
         };
 
@@ -180,7 +314,7 @@ class VoltCraftApp {
             this.redoStack.push(JSON.parse(JSON.stringify(this.graph)));
             this.graph = this.undoStack.pop();
             this.refreshUI();
-            this.syncWsEdit("undo");
+            this.syncWsEdit("replace_graph");
         }
     }
 
@@ -189,19 +323,25 @@ class VoltCraftApp {
             this.undoStack.push(JSON.parse(JSON.stringify(this.graph)));
             this.graph = this.redoStack.pop();
             this.refreshUI();
-            this.syncWsEdit("redo");
+            this.syncWsEdit("replace_graph");
         }
     }
 
-    syncWsEdit(actionName) {
+    syncWsEdit(actionName, mutations = []) {
         if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-            this.websocket.send(JSON.stringify({
+            const packet = {
                 type: "schematic_edit",
                 path: this.activeSchematicPath,
                 action: actionName,
                 agent_id: "Designer",
-                mutations: []
-            }));
+                mutations: mutations
+            };
+            // Whole-graph sync: without it the server's broadcast echoes the
+            // old state back and visually reverts local edits
+            if (actionName === "replace_graph") {
+                packet.graph = this.graph;
+            }
+            this.websocket.send(JSON.stringify(packet));
         }
     }
 
@@ -214,71 +354,100 @@ class VoltCraftApp {
         this.updateProbesList();
     }
 
+    addProbeBadge(container, key, label) {
+        const isChecked = this.probes.has(key);
+        const badge = document.createElement("div");
+        badge.className = "flex items-center justify-between px-3 py-1.5 rounded-lg bg-gray-950/60 border border-gray-800 hover:border-cyan-500/40 transition";
+        badge.innerHTML = `
+            <div class="flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full ${isChecked ? 'bg-cyan-400' : 'bg-gray-700'}"></span>
+                <span class="text-xs font-semibold code-font text-gray-300">${label}</span>
+            </div>
+            <input type="checkbox" ${isChecked ? 'checked' : ''} class="w-3.5 h-3.5 rounded bg-gray-950 border-gray-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-gray-900 cursor-pointer" data-net="${key}">
+        `;
+
+        badge.querySelector("input").addEventListener("change", (e) => {
+            if (e.target.checked) {
+                this.probes.add(key);
+            } else {
+                this.probes.delete(key);
+            }
+            this.refreshUI();
+            // Retrigger simulation waveform plot updating
+            if (this.simulatorView && this.simResults) {
+                const mode = document.getElementById("sim-mode").value;
+                this.simulatorView.plot(mode, this.simResults);
+            }
+        });
+
+        container.appendChild(badge);
+    }
+
     updateProbesList() {
         const container = document.getElementById("probes-list");
         container.innerHTML = "";
-        
+
         if (this.graph.nets.length <= 1) {
             container.innerHTML = `<div class="text-[11px] text-gray-500 italic p-3 text-center">Place components and connect nodes to assign waveform diagnostic probes.</div>`;
             return;
         }
 
+        // Net voltage probes
         this.graph.nets.forEach(net => {
             if (net === "n0") return; // Skip GND
-            
-            const isChecked = this.probes.has(net);
-            const badge = document.createElement("div");
-            badge.className = "flex items-center justify-between px-3 py-1.5 rounded-lg bg-gray-950/60 border border-gray-800 hover:border-cyan-500/40 transition";
-            badge.innerHTML = `
-                <div class="flex items-center gap-2">
-                    <span class="w-2 h-2 rounded-full ${isChecked ? 'bg-cyan-400' : 'bg-gray-700'}"></span>
-                    <span class="text-xs font-semibold code-font text-gray-300">Net: ${net}</span>
-                </div>
-                <input type="checkbox" ${isChecked ? 'checked' : ''} class="w-3.5 h-3.5 rounded bg-gray-950 border-gray-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-gray-900 cursor-pointer" data-net="${net}">
-            `;
-            
-            badge.querySelector("input").addEventListener("change", (e) => {
-                if (e.target.checked) {
-                    this.probes.add(net);
-                } else {
-                    this.probes.delete(net);
-                }
-                this.refreshUI();
-                // Retrigger simulation waveform plot updating
-                if (this.simulatorView && this.simResults) {
-                    const mode = document.getElementById("sim-mode").value;
-                    this.simulatorView.plot(mode, this.simResults);
-                }
-            });
-
-            container.appendChild(badge);
+            this.addProbeBadge(container, net, `Net: ${net}`);
         });
+
+        // Branch current probes (voltage-defining components carry their
+        // current in the MNA solution vector)
+        this.graph.nodes
+            .filter(n => ["voltage_source", "opamp", "digital_interface_out"].includes(n.type))
+            .forEach(node => {
+                this.addProbeBadge(container, `branch_${node.id}`, `I(${node.id}) [A]`);
+            });
     }
 
     updateTelemetry(mode, data) {
-        // Populate mechatronic metrics dynamically
+        // Populate solver diagnostics from the engine's reported stats
         const condEl = document.getElementById("stat-matrix-cond");
         const resEl = document.getElementById("stat-newton-res");
         const stepsEl = document.getElementById("stat-timesteps");
         const dimEl = document.getElementById("stat-matrix-dim");
-        
-        // Analog nodes count + voltage sources
+
+        const stats = data.stats;
+        if (stats) {
+            dimEl.textContent = `${stats.matrix_size} x ${stats.matrix_size}`;
+            condEl.textContent = stats.condition_estimate !== undefined
+                ? stats.condition_estimate.toExponential(2) : "—";
+            resEl.textContent = stats.residual !== undefined
+                ? stats.residual.toExponential(2) : "—";
+
+            if (stats.analysis === "dc") {
+                stepsEl.textContent = `${stats.newton_iterations} NR${stats.converged ? "" : " (DIVERGED)"}`;
+            } else if (stats.analysis === "transient") {
+                stepsEl.textContent = `${stats.timesteps} steps / ${stats.newton_iterations} NR`;
+            } else if (stats.analysis === "ac") {
+                stepsEl.textContent = `${stats.points} freq pts`;
+            } else if (stats.analysis === "dc_sweep") {
+                stepsEl.textContent = `${stats.points} sweep pts${stats.converged ? "" : " (DIVERGED)"}`;
+            } else if (stats.analysis === "transient_adaptive") {
+                stepsEl.textContent = `${stats.timesteps} adaptive (+${stats.rejected_steps} rej)`;
+            } else if (stats.analysis === "monte_carlo") {
+                stepsEl.textContent = `${stats.runs} MC runs / ${stats.toleranced_components} tol`;
+            }
+            return;
+        }
+
+        // Modes without engine stats (digital / mixed co-sim)
         const numNets = this.graph.nets.length - 1;
         const numVolts = this.graph.nodes.filter(n => n.type === "voltage_source" || n.type === "opamp").length;
         dimEl.textContent = `${numNets + numVolts} x ${numNets + numVolts}`;
-
-        if (mode === "dc" && data.x) {
-            condEl.textContent = "1.05e+02";
-            resEl.textContent = "3.14e-09";
-            stepsEl.textContent = "DC SOLVED";
-        } else if (mode === "transient" && data.waveforms) {
-            condEl.textContent = "2.41e+02";
-            resEl.textContent = "8.60e-08";
-            stepsEl.textContent = `${data.times.length} BE Steps`;
-        } else if (mode === "mixed" && data.analog_times) {
-            condEl.textContent = "5.19e+02";
-            resEl.textContent = "1.02e-07";
+        condEl.textContent = "—";
+        resEl.textContent = "—";
+        if (mode === "mixed" && data.analog_times) {
             stepsEl.textContent = `${data.analog_times.length} CO-Sim`;
+        } else {
+            stepsEl.textContent = "—";
         }
     }
 

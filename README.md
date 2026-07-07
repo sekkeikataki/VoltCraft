@@ -48,6 +48,46 @@ VoltCraft supports energy-storing transient integration utilizing two companion 
     *   Capacitor ($C$): $g_{eq} = \frac{2C}{dt}$, $i_{eq} = g_{eq} v(t-dt) + i(t-dt)$.
     *   Inductor ($L$): $g_{eq} = \frac{dt}{2L}$, $i_{eq} = g_{eq} v(t-dt) + i(t-dt)$.
 
+### Transistor Device Models
+*   **MOSFET (types `nmos` / `pmos`):** level-1 square-law model with cutoff, triode, and saturation regions, channel-length modulation ($\lambda$), symmetric drain-source reversal, and PMOS polarity mirroring. Params: `K` [A/V²], `Vth` [V], `lambda` [1/V].
+    $$I_D^{sat} = \frac{K}{2}\left(V_{GS} - V_{th}\right)^2 (1 + \lambda V_{DS})$$
+*   **BJT (types `bjt_npn` / `bjt_pnp`):** full Ebers-Moll two-junction model valid in cutoff, active, and saturation. Params: `Is` [A], `beta_f`, `beta_r`, `Vt` [V]. Active-region current gain $I_C/I_B = \beta_F$ falls out of the model rather than being imposed.
+
+Both devices are linearized per Newton-Raphson iteration into $g_m$/$g_{ds}$ companion stamps shared by the DC, transient, and AC analyses, and both report bias quantities ($V_{GS}$, $I_D$, $V_{BE}$, $I_C$, ...) in the DC operating-point output.
+
+### Dependent Sources & Device Capacitances
+All four SPICE controlled sources are supported with the standard MNA stamps and work in every analysis: **VCVS** (`vcvs`, E: $v = k\,v_c$), **VCCS** (`vccs`, G: $i = g_m v_c$), **CCCS** (`cccs`, F: $i = k\,i_{ctrl}$), and **CCVS** (`ccvs`, H: $v = r\,i_{ctrl}$). Current-controlled elements name their controlling branch via `params.control` (any voltage-defining component), using the SPICE $I(V)$ branch-current convention.
+
+Devices also carry first-order parasitic capacitances — diode junction `Cj0` and MOSFET `Cgs`/`Cgd` — stamped through the same companion machinery as explicit capacitors in transient runs and as $j\omega C$ admittances in AC, producing the physical frequency poles (e.g. the $1/2\pi R_G C_{GS}$ input pole of a common-source stage) and gate-charging delays.
+
+### AC Small-Signal Frequency Analysis (Bode)
+VoltCraft linearizes the circuit at its DC operating point (diodes reduce to their small-signal conductance $g_d$), then solves the complex-valued MNA system per frequency over a logarithmic sweep:
+
+$$\mathbf{A}(j\omega)\, \mathbf{x} = \mathbf{z}, \quad Y_C = j\omega C, \quad Y_L = \frac{1}{j\omega L}$$
+
+Sources carrying an `ac_mag` parameter (with optional `ac_phase` in degrees) drive the sweep; if none is annotated, the first voltage source is driven at $1\text{V}$ so node results read directly as the transfer function. Results are returned as magnitude (dB) and phase (degrees) per net and rendered as a two-pane Bode plot.
+
+### Stimulus Waveforms
+Voltage sources accept a `wave` parameter — `sine` (default), `square`, `triangle`, or `sawtooth` — plus `freq`, `phase` (radians), `offset`, and `duty` (square only). Periodic waves swing $\pm V$ around the offset; a source without a positive `freq` is a DC level.
+
+### Adaptive Timestep Control (LTE)
+Transient runs accept `adaptive: true` (or the **LTE** toggle in the UI): each candidate step is solved once at $h$ and again as two $h/2$ substeps, and the difference estimates the local truncation error scaled by $2^p - 1$ for an order-$p$ integrator. Steps exceeding `lte_tol` are rejected and halved; comfortably accurate steps double (bounded by `dt_min`/`dt_max`). On an RC charging benchmark the controller matches a fixed grid's worst-case accuracy with **44 steps instead of 40,000** (226x fewer Newton solves), and it automatically refines around square-wave edges.
+
+### Hierarchical Subcircuits
+A subcircuit definition is an ordinary VCG graph plus a top-level `"ports"` list naming the nets it exposes. Instances are nodes of type `subcircuit` (ID prefix `X`) whose `params.ref` names the definition file and whose pins map ports onto parent nets. Before solving, instances are flattened inline: internal components and nets are namespaced `X1.R1` / `X1.mid` (addressable in result maps and the operating-point report), ports splice onto the parent nets, and `n0` remains global ground. Definitions nest arbitrarily; cycles are rejected with a depth guard, and definition files are validated and confined to the workspace tree.
+
+### Monte Carlo Tolerance Analysis
+Components carrying a fractional `tol` parameter (e.g. `0.05` for ±5%) have their primary value (R, C, L, V, or I) re-sampled per run — uniformly within ±tol or gaussian with $\sigma = tol/3$ — and the DC operating point is solved for each sample (`mode="monte_carlo"`, seeded and reproducible). Results include per-net mean/σ/min/max plus the raw sample matrix, rendered in the UI as range bars with a ±σ band per probe. Nominal values are restored after the run.
+
+### CSV Export
+The `export_csv` action (or the **CSV** button next to the solver controls) runs the selected analysis and returns the results as CSV — time/sweep/frequency in the first column and one column per net and branch current (magnitude and phase columns for AC, a statistics table for Monte Carlo).
+
+### DC Parameter Sweeps
+Any component parameter can be swept linearly (`mode="dc_sweep"`, or the *DC Param Sweep* mode in the UI): the solver computes the full DC operating point per value and returns the transfer curves — e.g. voltage-divider ramps or MOSFET $I_D$–$V_{GS}$ characteristics. The swept parameter is restored after the run.
+
+### Solver Telemetry & Operating-Point Report
+Every DC, transient, and AC run returns a `stats` block (matrix size, Newton-Raphson iteration counts, convergence flag, worst residual, condition estimate) that drives the live diagnostics panel. DC runs additionally return an `operating_point` report with per-component voltage, current, and power (branch currents follow the MNA convention: a delivering source reports negative current). Voltage-defining components left with every terminal on ground are rejected by name instead of surfacing a bare singular-matrix error.
+
 ### Cycle-Basis Mesh Analysis Loop-Finder
 For loop-current cycle equations, VoltCraft finds fundamental loop bases dynamically:
 1.  Executes a Depth-First Search (DFS) spanning tree over two-terminal nodes.
@@ -101,8 +141,9 @@ Serves concurrent agent Designer and Verifier loops utilizing FastAPI:
 ## 6. Premium Single-Page Workbench Interface
 
 Vanilla HTML5, precompiled Tailwind CSS (`tailwind.min.css`), and pure ES2022 asynchronous JavaScript:
-*   **SVG Schematic CAD Canvas (`designer.js`):** Interactive placement, snap-to-grid grids, double-click rotations, and 3-segment orthogonal wire layouts.
-*   **Waveform Signal Plotter (`simulator_view.js`):** Renders analog curves and stacked digital logic transitions on SVG panels. Handles zoom/pan, cursor coordinates, and diagnostic probes.
+*   **SVG Schematic CAD Canvas (`designer.js`):** Interactive placement, snap-to-grid grids, double-click rotations, and 3-segment orthogonal wire layouts. Clicking a component selects it and opens the sidebar **component inspector**, where every model parameter can be edited live (`update_params` action) with the change journaled and broadcast to all clients.
+*   **Diagnostic Probes:** Any net voltage — and any branch current carried in the MNA solution (`I(V1)`, `I(U1)`, ...) — can be toggled as a probe and plotted in the transient and AC views.
+*   **Waveform Signal Plotter (`simulator_view.js`):** Renders analog curves, stacked digital logic transitions, and AC Bode plots (log-frequency magnitude + phase panes) on SVG panels. Handles zoom/pan, cursor coordinates, and diagnostic probes.
 *   **Agent telemetry Panel (`agent_bridge.js`):** Displays flashing cyan overlays on canvas viewports during ongoing autonomous agent socket edits.
 
 ---
@@ -115,12 +156,18 @@ Ensure your package manager contains Python and the authorized dependencies:
 sudo pacman -S --needed python python-fastapi uvicorn python-numpy python-httpx python-beautifulsoup4 python-pytest
 ```
 
+On any other platform, install from the pinned requirements instead:
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -r voltcraft/requirements.txt
+```
+
 ### Verification & Compilation Run
 1.  Compile check:
     ```bash
     /usr/bin/python -m py_compile $(find voltcraft -name '*.py')
     ```
-2.  Execute full 19-test regression suite:
+2.  Execute the full pytest regression suite (solver, parsers, API, and bug-regression tests):
     ```bash
     /usr/bin/python -m pytest voltcraft/tests -v
     ```
