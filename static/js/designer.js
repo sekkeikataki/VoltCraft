@@ -88,7 +88,7 @@ class VoltCraftDesigner {
             appStore.graph.edges = [];
             appStore.graph.nets = ["n0"];
             appStore.refreshUI();
-            appStore.syncWsEdit("clear");
+            appStore.syncWsEdit("replace_graph");
         });
 
         // Click on SVG canvas to place
@@ -120,20 +120,37 @@ class VoltCraftDesigner {
                 const rect = this.svg.getBoundingClientRect();
                 const rawX = (e.clientX - rect.left) / this.scale;
                 const rawY = (e.clientY - rect.top) / this.scale;
-                
+
                 const snapX = Math.round((rawX - this.dragOffset.x) / this.gridSize) * this.gridSize;
                 const snapY = Math.round((rawY - this.dragOffset.y) / this.gridSize) * this.gridSize;
-                
-                this.draggedNode.pos.x = snapX;
-                this.draggedNode.pos.y = snapY;
-                
-                this.render(appStore.graph);
+
+                const oldX = this.draggedNode.pos.x;
+                const oldY = this.draggedNode.pos.y;
+                if (snapX !== oldX || snapY !== oldY) {
+                    // Wire endpoints anchored at the component's position
+                    // follow it while dragging
+                    appStore.graph.edges.forEach(edge => {
+                        const pts = edge.path;
+                        if (!pts || pts.length === 0) return;
+                        [0, pts.length - 1].forEach(idx => {
+                            if (pts[idx][0] === oldX && pts[idx][1] === oldY) {
+                                pts[idx] = [snapX, snapY];
+                            }
+                        });
+                    });
+
+                    this.draggedNode.pos.x = snapX;
+                    this.draggedNode.pos.y = snapY;
+                    this.render(appStore.graph);
+                }
             }
         });
 
         this.svg.addEventListener("mouseup", () => {
             if (this.draggedNode) {
-                appStore.syncWsEdit("update_node_positions");
+                // Whole-graph sync so the server broadcast reflects the new
+                // positions and rerouted wires instead of reverting them
+                appStore.syncWsEdit("replace_graph");
                 this.draggedNode = null;
             }
         });
@@ -294,7 +311,7 @@ class VoltCraftDesigner {
                 appStore.pushState();
                 node.rot = (node.rot + 90) % 360;
                 this.render(graph);
-                appStore.syncWsEdit("rotate_node");
+                appStore.syncWsEdit("replace_graph");
                 e.stopPropagation();
             });
 

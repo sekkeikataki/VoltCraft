@@ -97,6 +97,16 @@ def source_voltage_at(params: Dict[str, Any], t: float) -> float:
     raise ValueError(f"Unknown source waveform: {wave!r}")
 
 
+# Primary value parameter (and its default) per tolerance-bearing component
+PRIMARY_VALUE_PARAMS = {
+    "resistor": ("R", 1000.0),
+    "capacitor": ("C", 1e-6),
+    "inductor": ("L", 1e-3),
+    "voltage_source": ("V", 5.0),
+    "current_source": ("I", 0.0)
+}
+
+
 class ContinuousSolver:
     """
     Continuous-time analog circuit solver.
@@ -442,6 +452,13 @@ class ContinuousSolver:
             cgd = float(params.get("Cgd", 0.0))
             if cgd > 0.0:
                 yield f"{n_id}_cgd", "gate", "drain", cgd
+        elif n_type in ("bjt_npn", "bjt_pnp"):
+            cje = float(params.get("Cje", 0.0))
+            if cje > 0.0:
+                yield f"{n_id}_cje", "base", "emitter", cje
+            cjc = float(params.get("Cjc", 0.0))
+            if cjc > 0.0:
+                yield f"{n_id}_cjc", "base", "collector", cjc
 
     def assemble_mna(self, t: float, dt: float, history: Dict[str, Any], prev_x: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray, Dict[str, int]]:
         """
@@ -1002,6 +1019,87 @@ class ContinuousSolver:
         }
 
         return values, results, cmap
+
+    def solve_monte_carlo(self, runs: int = 100, seed: Optional[int] = None,
+                          distribution: str = "uniform") -> Tuple[Dict[str, np.ndarray], Dict[str, int]]:
+        """
+        Monte Carlo tolerance analysis of the DC operating point.
+
+        Every component whose params carry a positive 'tol' (fractional,
+        e.g. 0.05 for +/-5%) has its primary value parameter (R, C, L, V,
+        or I) re-sampled per run: uniformly within +/-tol, or gaussian
+        with sigma = tol/3 so the tolerance is the 3-sigma bound. Nominal
+        values are restored afterwards.
+
+        Returns ({"samples", "mean", "std", "min", "max"}, cmap) where
+        samples is (size x runs) and the statistics are per-variable.
+        """
+        runs = int(runs)
+        if runs < 2:
+            raise ValueError(f"Monte Carlo needs at least 2 runs, got {runs}")
+        if distribution not in ("uniform", "gaussian"):
+            raise ValueError(f"Unknown distribution {distribution!r}; use 'uniform' or 'gaussian'")
+
+        rng = np.random.default_rng(seed)
+
+        toleranced = []
+        for node in self.nodes:
+            spec = PRIMARY_VALUE_PARAMS.get(node["type"])
+            if spec is None:
+                continue
+            key, default = spec
+            params = node.setdefault("params", {})
+            tol = float(params.get("tol", 0.0))
+            if tol > 0.0:
+                toleranced.append((params, key, float(params.get(key, default)), tol))
+
+        if not toleranced:
+            raise ValueError(
+                "Monte Carlo requires at least one component with a positive 'tol' parameter"
+            )
+
+        _, net_map, volt_comps = self._get_nets_and_mappings()
+        size = len(net_map) + len(volt_comps)
+        samples = np.zeros((size, runs))
+
+        cmap: Dict[str, int] = {}
+        total_iterations = 0
+        all_converged = True
+        try:
+            for r in range(runs):
+                for params, key, nominal, tol in toleranced:
+                    if distribution == "gaussian":
+                        factor = 1.0 + rng.normal(0.0, tol / 3.0)
+                    else:
+                        factor = 1.0 + rng.uniform(-tol, tol)
+                    # Guard against non-physical sign flips from gaussian tails
+                    params[key] = nominal * max(factor, 1e-3)
+                x, cmap = self.solve_dc()
+                samples[:, r] = x
+                total_iterations += self.last_solve_stats["newton_iterations"]
+                all_converged = all_converged and self.last_solve_stats["converged"]
+        finally:
+            for params, key, nominal, _tol in toleranced:
+                params[key] = nominal
+
+        self.last_solve_stats = {
+            "analysis": "monte_carlo",
+            "matrix_size": size,
+            "runs": runs,
+            "toleranced_components": len(toleranced),
+            "distribution": distribution,
+            "newton_iterations": total_iterations,
+            "converged": all_converged
+        }
+
+        stats = {
+            "samples": samples,
+            "mean": samples.mean(axis=1),
+            "std": samples.std(axis=1),
+            "min": samples.min(axis=1),
+            "max": samples.max(axis=1)
+        }
+        return stats, cmap
 
     def _assemble_ac(self, omega: float, x_op: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """

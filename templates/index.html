@@ -276,11 +276,15 @@
                         <option value="dc">DC Bias Operating Pt</option>
                         <option value="transient" selected>Transient Step (Time)</option>
                         <option value="dc_sweep">DC Param Sweep</option>
+                        <option value="monte_carlo">Monte Carlo (DC)</option>
                         <option value="ac">AC Sweep (Bode)</option>
                         <option value="mixed">Mixed Co-Simulation</option>
                     </select>
                     <button id="btn-simulate" class="px-3 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-xs font-semibold transition tracking-wide text-white uppercase shadow-md shadow-cyan-500/10">
                         run solver
+                    </button>
+                    <button id="btn-export-csv" title="Run the selected analysis and download the results as CSV" class="px-2 py-1 rounded border border-gray-700 hover:border-cyan-500/40 text-[10px] font-semibold transition tracking-wide text-gray-300 uppercase">
+                        csv
                     </button>
                 </div>
             </div>

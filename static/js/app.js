@@ -31,6 +31,10 @@ class VoltCraftApp {
         // Bind global UI controls
         document.getElementById("btn-save").addEventListener("click", () => this.saveSchematic());
         document.getElementById("btn-simulate").addEventListener("click", () => this.runSimulation());
+        const csvBtn = document.getElementById("btn-export-csv");
+        if (csvBtn) {
+            csvBtn.addEventListener("click", () => this.exportCsv());
+        }
 
         // Show the sweep parameter row only in dc_sweep mode
         document.getElementById("sim-mode").addEventListener("change", (e) => {
@@ -84,15 +88,12 @@ class VoltCraftApp {
         }
     }
 
-    async runSimulation() {
-        const mode = document.getElementById("sim-mode").value;
-        const btn = document.getElementById("btn-simulate");
-        btn.disabled = true;
-        btn.textContent = "SOLVING...";
-
+    buildSimParams(mode) {
         let params;
         if (mode === "ac") {
             params = { f_start: 1.0, f_stop: 1e6, points_per_decade: 20 };
+        } else if (mode === "monte_carlo") {
+            params = { runs: 200, distribution: "uniform" };
         } else if (mode === "dc_sweep") {
             params = {
                 component: document.getElementById("sweep-component").value.trim(),
@@ -121,6 +122,16 @@ class VoltCraftApp {
                 { time: 0.0, net: "inv_out", val: "1" }
             ];
         }
+        return params;
+    }
+
+    async runSimulation() {
+        const mode = document.getElementById("sim-mode").value;
+        const btn = document.getElementById("btn-simulate");
+        btn.disabled = true;
+        btn.textContent = "SOLVING...";
+
+        const params = this.buildSimParams(mode);
 
         try {
             const res = await this.postAction("run_simulation", {
@@ -148,6 +159,35 @@ class VoltCraftApp {
         } finally {
             btn.disabled = false;
             btn.textContent = "RUN SOLVER";
+        }
+    }
+
+    async exportCsv() {
+        const mode = document.getElementById("sim-mode").value;
+        if (mode === "digital" || mode === "mixed") {
+            alert("CSV export supports DC, transient, sweep, AC, and Monte Carlo modes.");
+            return;
+        }
+        try {
+            const res = await this.postAction("export_csv", {
+                path: this.activeSchematicPath,
+                mode: mode,
+                params: this.buildSimParams(mode)
+            });
+            if (res.status !== "ok") {
+                alert(`CSV export failed: ${res.error.message}`);
+                return;
+            }
+            const blob = new Blob([res.data], { type: "text/csv" });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            const base = this.activeSchematicPath.split("/").pop().replace(".vcg.json", "");
+            link.download = `${base}_${mode}.csv`;
+            link.click();
+            URL.revokeObjectURL(link.href);
+            this.logJournal("export_csv", { mode: mode }, res.journal_id);
+        } catch (err) {
+            console.error("[VOLTCRAFT] CSV export error: ", err);
         }
     }
 
@@ -274,7 +314,7 @@ class VoltCraftApp {
             this.redoStack.push(JSON.parse(JSON.stringify(this.graph)));
             this.graph = this.undoStack.pop();
             this.refreshUI();
-            this.syncWsEdit("undo");
+            this.syncWsEdit("replace_graph");
         }
     }
 
@@ -283,19 +323,25 @@ class VoltCraftApp {
             this.undoStack.push(JSON.parse(JSON.stringify(this.graph)));
             this.graph = this.redoStack.pop();
             this.refreshUI();
-            this.syncWsEdit("redo");
+            this.syncWsEdit("replace_graph");
         }
     }
 
-    syncWsEdit(actionName) {
+    syncWsEdit(actionName, mutations = []) {
         if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
-            this.websocket.send(JSON.stringify({
+            const packet = {
                 type: "schematic_edit",
                 path: this.activeSchematicPath,
                 action: actionName,
                 agent_id: "Designer",
-                mutations: []
-            }));
+                mutations: mutations
+            };
+            // Whole-graph sync: without it the server's broadcast echoes the
+            // old state back and visually reverts local edits
+            if (actionName === "replace_graph") {
+                packet.graph = this.graph;
+            }
+            this.websocket.send(JSON.stringify(packet));
         }
     }
 
@@ -386,6 +432,8 @@ class VoltCraftApp {
                 stepsEl.textContent = `${stats.points} sweep pts${stats.converged ? "" : " (DIVERGED)"}`;
             } else if (stats.analysis === "transient_adaptive") {
                 stepsEl.textContent = `${stats.timesteps} adaptive (+${stats.rejected_steps} rej)`;
+            } else if (stats.analysis === "monte_carlo") {
+                stepsEl.textContent = `${stats.runs} MC runs / ${stats.toleranced_components} tol`;
             }
             return;
         }

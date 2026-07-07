@@ -511,13 +511,8 @@ async def action_delete_node(agent_id: str, params: Dict[str, Any]) -> Dict[str,
 async def action_delete_edge(agent_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
     return await _delete_graph_item(agent_id, params, "delete_edge")
 
-@agent_action("run_simulation")
-async def action_run_simulation(agent_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    require_params(params, "path")
-    path = params["path"]
-    mode = params.get("mode", "dc")  # dc, transient, digital, mixed
-    sim_params = params.get("params", {})
-
+def _compute_simulation(path: str, mode: str, sim_params: Dict[str, Any]) -> Dict[str, Any]:
+    """Runs one analysis on the loaded schematic and returns its results."""
     graph = get_loaded_graph(path)
 
     # Expand subcircuit instances into a flat netlist for the solvers
@@ -571,6 +566,21 @@ async def action_run_simulation(agent_id: str, params: Dict[str, Any]) -> Dict[s
             "cmap": cmap,
             "stats": analog.last_solve_stats
         }
+    elif mode == "monte_carlo":
+        runs = int(sim_params.get("runs", 100))
+        seed = sim_params.get("seed")
+        distribution = sim_params.get("distribution", "uniform")
+
+        mc, cmap = analog.solve_monte_carlo(runs=runs, seed=seed, distribution=distribution)
+        results = {
+            "mean": mc["mean"].tolist(),
+            "std": mc["std"].tolist(),
+            "min": mc["min"].tolist(),
+            "max": mc["max"].tolist(),
+            "samples": mc["samples"].tolist(),
+            "cmap": cmap,
+            "stats": analog.last_solve_stats
+        }
     elif mode == "ac":
         f_start = float(sim_params.get("f_start", 1.0))
         f_stop = float(sim_params.get("f_stop", 1e6))
@@ -615,8 +625,73 @@ async def action_run_simulation(agent_id: str, params: Dict[str, Any]) -> Dict[s
     else:
         raise ValueError(f"Unknown simulation mode: {mode}")
 
-    j_id = write_journal_entry(agent_id, "run_simulation", {"path": path, "mode": mode}, graph)
+    return results
+
+@agent_action("run_simulation")
+async def action_run_simulation(agent_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    require_params(params, "path")
+    path = params["path"]
+    mode = params.get("mode", "dc")  # dc, transient, dc_sweep, monte_carlo, ac, digital, mixed
+    sim_params = params.get("params", {})
+
+    results = _compute_simulation(path, mode, sim_params)
+
+    j_id = write_journal_entry(agent_id, "run_simulation", {"path": path, "mode": mode}, get_loaded_graph(path))
     return {"status": "ok", "data": results, "journal_id": j_id}
+
+def _fmt(value: Any) -> str:
+    return f"{value:.10g}" if isinstance(value, float) else str(value)
+
+def results_to_csv(mode: str, results: Dict[str, Any]) -> str:
+    """Serializes analysis results as CSV with one column per net/branch."""
+    cmap = results.get("cmap")
+    if not cmap:
+        raise ValueError(f"CSV export is not supported for mode: {mode}")
+    keys = sorted(cmap, key=cmap.get)
+
+    lines = []
+    if mode in ("transient", "dc_sweep"):
+        stats = results.get("stats", {})
+        if mode == "transient":
+            x_label, xs = "time_s", results["times"]
+        else:
+            x_label, xs = f"{stats.get('component')}.{stats.get('param')}", results["values"]
+        waveforms = results["waveforms"]
+        lines.append(",".join([x_label] + keys))
+        for k, x_val in enumerate(xs):
+            lines.append(",".join([_fmt(x_val)] + [_fmt(waveforms[cmap[key]][k]) for key in keys]))
+    elif mode == "ac":
+        header = ["freq_hz"] + [f"mag_db({k})" for k in keys] + [f"phase_deg({k})" for k in keys]
+        lines.append(",".join(header))
+        for k, freq in enumerate(results["freqs"]):
+            row = [_fmt(freq)]
+            row += [_fmt(results["magnitude_db"][cmap[key]][k]) for key in keys]
+            row += [_fmt(results["phase_deg"][cmap[key]][k]) for key in keys]
+            lines.append(",".join(row))
+    elif mode == "dc":
+        lines.append(",".join(keys))
+        lines.append(",".join(_fmt(results["x"][cmap[key]]) for key in keys))
+    elif mode == "monte_carlo":
+        lines.append(",".join(["metric"] + keys))
+        for metric in ("mean", "std", "min", "max"):
+            lines.append(",".join([metric] + [_fmt(results[metric][cmap[key]]) for key in keys]))
+    else:
+        raise ValueError(f"CSV export is not supported for mode: {mode}")
+
+    return "\n".join(lines) + "\n"
+
+@agent_action("export_csv")
+async def action_export_csv(agent_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    require_params(params, "path")
+    path = params["path"]
+    mode = params.get("mode", "dc")
+    sim_params = params.get("params", {})
+
+    results = _compute_simulation(path, mode, sim_params)
+    csv_text = results_to_csv(mode, results)
+
+    j_id = write_journal_entry(agent_id, "export_csv", {"path": path, "mode": mode}, get_loaded_graph(path))
+    return {"status": "ok", "data": csv_text, "journal_id": j_id}
 
 @agent_action("query_wiki")
 async def action_query_wiki(agent_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -745,7 +820,19 @@ async def websocket_agent_channel(websocket: WebSocket):
                         for edit in mutations:
                             nid = edit["id"]
                             if nid in nodes_dict:
-                                nodes_dict[nid]["pos"] = edit["pos"]
+                                if "pos" in edit:
+                                    nodes_dict[nid]["pos"] = edit["pos"]
+                                if "rot" in edit:
+                                    nodes_dict[nid]["rot"] = edit["rot"]
+                    elif action == "replace_graph":
+                        # Whole-graph sync used by client-side edits (drag,
+                        # rotate, undo/redo, clear); invalid payloads are
+                        # dropped and the authoritative state is re-broadcast
+                        new_graph = packet.get("graph")
+                        is_valid, _msg = NativeGraphValidator.validate(new_graph)
+                        if is_valid:
+                            active_schematics[path] = new_graph
+                            graph = new_graph
 
                     write_journal_entry(agent_id, f"ws_{action}", mutations, graph)
                     # Broadcast merge results

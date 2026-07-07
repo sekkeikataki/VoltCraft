@@ -76,6 +76,12 @@ Transient runs accept `adaptive: true` (or the **LTE** toggle in the UI): each c
 ### Hierarchical Subcircuits
 A subcircuit definition is an ordinary VCG graph plus a top-level `"ports"` list naming the nets it exposes. Instances are nodes of type `subcircuit` (ID prefix `X`) whose `params.ref` names the definition file and whose pins map ports onto parent nets. Before solving, instances are flattened inline: internal components and nets are namespaced `X1.R1` / `X1.mid` (addressable in result maps and the operating-point report), ports splice onto the parent nets, and `n0` remains global ground. Definitions nest arbitrarily; cycles are rejected with a depth guard, and definition files are validated and confined to the workspace tree.
 
+### Monte Carlo Tolerance Analysis
+Components carrying a fractional `tol` parameter (e.g. `0.05` for ±5%) have their primary value (R, C, L, V, or I) re-sampled per run — uniformly within ±tol or gaussian with $\sigma = tol/3$ — and the DC operating point is solved for each sample (`mode="monte_carlo"`, seeded and reproducible). Results include per-net mean/σ/min/max plus the raw sample matrix, rendered in the UI as range bars with a ±σ band per probe. Nominal values are restored after the run.
+
+### CSV Export
+The `export_csv` action (or the **CSV** button next to the solver controls) runs the selected analysis and returns the results as CSV — time/sweep/frequency in the first column and one column per net and branch current (magnitude and phase columns for AC, a statistics table for Monte Carlo).
+
 ### DC Parameter Sweeps
 Any component parameter can be swept linearly (`mode="dc_sweep"`, or the *DC Param Sweep* mode in the UI): the solver computes the full DC operating point per value and returns the transfer curves — e.g. voltage-divider ramps or MOSFET $I_D$–$V_{GS}$ characteristics. The swept parameter is restored after the run.
 
