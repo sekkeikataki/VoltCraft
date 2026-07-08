@@ -16,6 +16,7 @@ from voltcraft.engine.parser_native import NativeGraphValidator
 from voltcraft.engine.parser_drawio import DrawioCodec
 from voltcraft.engine.scraper import DatasheetScraper
 from voltcraft.engine.subcircuit import flatten_subcircuits
+from voltcraft.engine import measurements
 
 app = FastAPI(title="VoltCraft-Workstation-Server", version="1.0.0")
 
@@ -692,6 +693,37 @@ async def action_export_csv(agent_id: str, params: Dict[str, Any]) -> Dict[str, 
 
     j_id = write_journal_entry(agent_id, "export_csv", {"path": path, "mode": mode}, get_loaded_graph(path))
     return {"status": "ok", "data": csv_text, "journal_id": j_id}
+
+@agent_action("measure")
+async def action_measure(agent_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Runs a transient analysis and reports scope measurements per net."""
+    require_params(params, "path")
+    path = params["path"]
+    sim_params = params.get("params", {})
+
+    results = _compute_simulation(path, "transient", sim_params)
+    cmap = results["cmap"]
+    times = results["times"]
+    waveforms = results["waveforms"]
+
+    # Measure the requested nets, or every non-ground net by default
+    requested = params.get("nets")
+    if requested:
+        targets = [n for n in requested if n in cmap]
+        missing = [n for n in requested if n not in cmap]
+        if missing:
+            raise ValueError(f"Unknown net(s) for measurement: {', '.join(missing)}")
+    else:
+        targets = [n for n in cmap if n != "n0"]
+
+    measured = {net: measurements.measure_all(times, waveforms[cmap[net]]) for net in targets}
+
+    j_id = write_journal_entry(agent_id, "measure", {"path": path, "nets": targets}, get_loaded_graph(path))
+    return {
+        "status": "ok",
+        "data": {"measurements": measured, "stats": results.get("stats")},
+        "journal_id": j_id
+    }
 
 @agent_action("query_wiki")
 async def action_query_wiki(agent_id: str, params: Dict[str, Any]) -> Dict[str, Any]:

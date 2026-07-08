@@ -177,10 +177,33 @@ class VoltCraftDesigner {
         }
     }
 
-    drawOrthogonalPath(x1, y1, x2, y2) {
-        // Compute premium orthogonal paths (Manhattan-bend routes)
-        const midX = (x1 + x2) / 2;
-        return `M ${x1} ${y1} L ${midX} ${y1} L ${midX} ${y2} L ${x2} ${y2}`;
+    orthogonalRoute(points) {
+        // Builds an SVG path that only travels along horizontal and vertical
+        // segments (Manhattan routing). Two-point wires get a mid-column
+        // Z-bend so they never render as a diagonal; multi-point paths
+        // (e.g. imported from draw.io) are connected corner-to-corner with
+        // an L-bend between each pair.
+        const s = this.scale;
+        if (points.length < 2) return "";
+
+        let d = `M ${points[0][0] * s} ${points[0][1] * s}`;
+        if (points.length === 2) {
+            const [x1, y1] = points[0];
+            const [x2, y2] = points[1];
+            const midX = (x1 + x2) / 2;
+            d += ` L ${midX * s} ${y1 * s} L ${midX * s} ${y2 * s} L ${x2 * s} ${y2 * s}`;
+            return d;
+        }
+        for (let i = 1; i < points.length; i++) {
+            const [px, py] = points[i - 1];
+            const [cx, cy] = points[i];
+            if (px !== cx && py !== cy) {
+                // Insert an L-bend so the segment stays orthogonal
+                d += ` L ${cx * s} ${py * s}`;
+            }
+            d += ` L ${cx * s} ${cy * s}`;
+        }
+        return d;
     }
 
     appendGridLayer(w, h) {
@@ -222,14 +245,10 @@ class VoltCraftDesigner {
         graph.edges.forEach(edge => {
             const pathData = edge.path;
             if (pathData.length < 2) return;
-            
+
             const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-            let d = `M ${pathData[0][0] * this.scale} ${pathData[0][1] * this.scale}`;
-            for (let i = 1; i < pathData.length; i++) {
-                // Draw orthogonal line segments
-                d += ` L ${pathData[i][0] * this.scale} ${pathData[i][1] * this.scale}`;
-            }
-            
+            const d = this.orthogonalRoute(pathData);
+
             // Check if this net has an active diagnostic probe check in global state
             const hasProbe = appStore.probes.has(edge.net);
 

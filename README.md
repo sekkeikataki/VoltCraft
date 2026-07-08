@@ -79,6 +79,9 @@ A subcircuit definition is an ordinary VCG graph plus a top-level `"ports"` list
 ### Monte Carlo Tolerance Analysis
 Components carrying a fractional `tol` parameter (e.g. `0.05` for ±5%) have their primary value (R, C, L, V, or I) re-sampled per run — uniformly within ±tol or gaussian with $\sigma = tol/3$ — and the DC operating point is solved for each sample (`mode="monte_carlo"`, seeded and reproducible). Results include per-net mean/σ/min/max plus the raw sample matrix, rendered in the UI as range bars with a ±σ band per probe. Nominal values are restored after the run.
 
+### Waveform Measurements
+The `measure` action (or the **Measure** button in the probe console) runs a transient and reports oscilloscope-style measurements per probed net: peak-to-peak, min/max, time-weighted average and RMS, 10–90% rise/fall time, percent overshoot, settling time, and — for periodic signals — frequency, period, and duty cycle. Threshold crossings are linearly interpolated (continuous in the sample values, not quantized to the grid) and integral quantities are trapezoidally time-weighted so they stay correct on the non-uniform grids produced by the adaptive solver. Measurements are validated analytically: an RC step's rise time recovers the textbook $2.197\,\tau$, a sine's RMS is $A/\sqrt{2}$, a first-order 2% settling lands at $3.912\,\tau$, and an underdamped step reproduces its known percent overshoot.
+
 ### CSV Export
 The `export_csv` action (or the **CSV** button next to the solver controls) runs the selected analysis and returns the results as CSV — time/sweep/frequency in the first column and one column per net and branch current (magnitude and phase columns for AC, a statistics table for Monte Carlo).
 
