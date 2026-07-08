@@ -35,6 +35,10 @@ class VoltCraftApp {
         if (csvBtn) {
             csvBtn.addEventListener("click", () => this.exportCsv());
         }
+        const measureBtn = document.getElementById("btn-measure");
+        if (measureBtn) {
+            measureBtn.addEventListener("click", () => this.runMeasurements());
+        }
 
         // Show the sweep parameter row only in dc_sweep mode
         document.getElementById("sim-mode").addEventListener("change", (e) => {
@@ -159,6 +163,75 @@ class VoltCraftApp {
         } finally {
             btn.disabled = false;
             btn.textContent = "RUN SOLVER";
+        }
+    }
+
+    async runMeasurements() {
+        const nets = [...this.probes].filter(n => !n.startsWith("branch_"));
+        if (nets.length === 0) {
+            alert("Select at least one net-voltage probe before measuring.");
+            return;
+        }
+        const btn = document.getElementById("btn-measure");
+        btn.disabled = true;
+        try {
+            const res = await this.postAction("measure", {
+                path: this.activeSchematicPath,
+                nets: nets,
+                params: { t_stop: 0.05, dt: 1e-4, method: "trapezoidal", uic: true }
+            });
+            if (res.status === "ok") {
+                this.renderMeasurements(res.data.measurements);
+                this.logJournal("measure", { nets: nets }, res.journal_id);
+            } else {
+                alert(`Measurement failed: ${res.error.message}`);
+            }
+        } catch (err) {
+            console.error("[VOLTCRAFT] Measurement error: ", err);
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    renderMeasurements(measurements) {
+        const container = document.getElementById("measurements-list");
+        container.innerHTML = "";
+
+        // Display order and human labels/units for the measurement keys
+        const rows = [
+            ["peak_to_peak", "Vpp", "V"], ["max", "Max", "V"], ["min", "Min", "V"],
+            ["average", "Avg", "V"], ["rms", "RMS", "V"],
+            ["rise_time", "Rise", "s"], ["fall_time", "Fall", "s"],
+            ["overshoot_pct", "Overshoot", "%"], ["settling_time", "Settle", "s"],
+            ["frequency", "Freq", "Hz"], ["period", "Period", "s"], ["duty_cycle", "Duty", ""]
+        ];
+
+        const fmt = (v, unit) => {
+            if (unit === "%") return `${v.toFixed(2)}%`;
+            if (unit === "") return `${(v * 100).toFixed(1)}%`;
+            const abs = Math.abs(v);
+            if (abs !== 0 && (abs < 1e-3 || abs >= 1e4)) return `${v.toExponential(3)} ${unit}`;
+            return `${v.toFixed(4)} ${unit}`;
+        };
+
+        Object.keys(measurements).forEach(net => {
+            const meas = measurements[net];
+            const card = document.createElement("div");
+            card.className = "rounded-lg bg-gray-950/60 border border-gray-800 p-2";
+            const cells = rows
+                .filter(([key]) => meas[key] !== undefined)
+                .map(([key, label, unit]) =>
+                    `<div class="flex justify-between gap-2"><span class="text-gray-500">${label}</span><span class="text-cyan-300 code-font">${fmt(meas[key], unit)}</span></div>`)
+                .join("");
+            card.innerHTML = `
+                <div class="text-[10px] font-bold text-amber-300 code-font mb-1">${net}</div>
+                <div class="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[9px]">${cells}</div>
+            `;
+            container.appendChild(card);
+        });
+
+        if (Object.keys(measurements).length === 0) {
+            container.innerHTML = `<div class="text-[11px] text-gray-500 italic p-2 text-center">No probed nets to measure.</div>`;
         }
     }
 

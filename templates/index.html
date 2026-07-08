@@ -340,6 +340,17 @@
                         <div class="text-[11px] text-gray-500 italic p-3 text-center">Place components and connect nodes to assign waveform diagnostic probes.</div>
                     </div>
                 </div>
+
+                <!-- Waveform Measurements -->
+                <div class="glass-panel rounded-xl p-4 flex flex-col gap-2" style="flex-shrink: 0;">
+                    <div class="flex items-center justify-between mb-1">
+                        <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">waveform measurements</h3>
+                        <button id="btn-measure" title="Run a transient and report scope measurements for probed nets" class="px-2 py-0.5 rounded border border-gray-700 hover:border-cyan-500/40 text-[9px] font-semibold uppercase tracking-wide text-gray-300 transition">measure</button>
+                    </div>
+                    <div class="flex flex-col gap-2 max-h-52 overflow-y-auto" id="measurements-list">
+                        <div class="text-[11px] text-gray-500 italic p-2 text-center">Select probes and click Measure to compute rise time, overshoot, RMS, frequency, and more.</div>
+                    </div>
+                </div>
             </div>
         </section>
 
