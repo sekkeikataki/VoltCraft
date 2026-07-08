@@ -48,6 +48,13 @@ VoltCraft supports energy-storing transient integration utilizing two companion 
     *   Capacitor ($C$): $g_{eq} = \frac{2C}{dt}$, $i_{eq} = g_{eq} v(t-dt) + i(t-dt)$.
     *   Inductor ($L$): $g_{eq} = \frac{dt}{2L}$, $i_{eq} = g_{eq} v(t-dt) + i(t-dt)$.
 
+### Discrete & Magnetic Devices
+*   **Zener diode** (`zener`): a forward Shockley junction plus a reverse-breakdown term that clamps near $-V_z$ — the basis of shunt regulators and clamps. Params: `Vz`, `Is`, `Ibv`, `Nbv`.
+*   **LED** (`led`): a junction tuned for a ~2V forward drop (higher per-iteration voltage headroom than a signal diode).
+*   **Potentiometer** (`potentiometer`): a three-terminal variable divider; the wiper position $w \in (0,1)$ splits the total `R` into $Rw$ (a→wiper) and $R(1-w)$ (wiper→b).
+*   **Voltage-controlled switch** (`switch`): an SPST whose conductance snaps between `Ron` and `Roff` as the control voltage crosses `threshold` (with an `inverted` option), modeling relays and analog gates.
+*   **Ideal transformer** (`transformer`): a lossless two-winding coupler with turns ratio $a = N_p{:}N_s$ enforcing $V_p = a V_s$ and $I_s = -a I_p$. It adds two branch-current unknowns (`branch_<id>:p`, `branch_<id>:s`) via a generalized branch-allocation layer that leaves every single-branch element bit-identical.
+
 ### Transistor Device Models
 *   **MOSFET (types `nmos` / `pmos`):** level-1 square-law model with cutoff, triode, and saturation regions, channel-length modulation ($\lambda$), symmetric drain-source reversal, and PMOS polarity mirroring. Params: `K` [A/V²], `Vth` [V], `lambda` [1/V].
     $$I_D^{sat} = \frac{K}{2}\left(V_{GS} - V_{th}\right)^2 (1 + \lambda V_{DS})$$

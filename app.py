@@ -128,6 +128,68 @@ characteristics:
 # Bipolar Junction Transistors
 Current-controlled transistors modeled with the full Ebers-Moll
 two-junction equations, valid in cutoff, active, and saturation regions.
+""",
+    "zener": """---
+family: zener
+iec_code: IEC-60617-5
+equation: reverse breakdown at v = -Vz
+characteristics:
+  - Regulates its reverse voltage near Vz
+  - Params: Vz [V], Is [A], Ibv [A], Nbv
+---
+# Zener Diodes
+A diode with a controlled reverse breakdown voltage Vz. Below -Vz it
+conducts heavily, clamping the voltage across it - the basis of simple
+shunt voltage regulators and clamps.
+""",
+    "led": """---
+family: led
+iec_code: IEC-60617-5
+equation: i = Is*(exp(v/(N*Vt)) - 1)
+characteristics:
+  - Forward drop typically 1.8V to 3.3V
+  - Modeled as a Shockley junction with a higher turn-on
+---
+# Light-Emitting Diodes
+A diode with a higher forward voltage; VoltCraft models it with the same
+junction equation tuned for a ~2V drop.
+""",
+    "potentiometer": """---
+family: potentiometer
+iec_code: IEC-60617-4
+equation: R_aw = R*w, R_wb = R*(1-w)
+characteristics:
+  - Three terminals: a, wiper, b
+  - wiper position w in (0, 1) splits the total resistance
+---
+# Potentiometers
+A variable resistive divider. The wiper taps a fraction of the total
+resistance R set by the position w, giving an adjustable output.
+""",
+    "switch": """---
+family: switch
+iec_code: IEC-60617-7
+equation: G = 1/Ron if v(cp)-v(cn) >= threshold else 1/Roff
+characteristics:
+  - Voltage-controlled SPST
+  - Params: threshold [V], Ron, Roff, inverted
+---
+# Voltage-Controlled Switches
+An SPST switch whose on/off state is set by a control voltage relative to
+a threshold, modeling relays, analog gates, and transmission gates.
+""",
+    "transformer": """---
+family: transformer
+iec_code: IEC-60617-6
+equation: Vp = a*Vs, Is = -a*Ip
+characteristics:
+  - Ideal two-winding transformer, turns ratio a = Np:Ns
+  - Conserves power (lossless)
+---
+# Transformers
+An ideal magnetically-coupled two-winding transformer. Voltage scales by
+the turns ratio and current scales inversely, conserving power - the core
+of AC power conversion and isolation.
 """
 }
 
@@ -337,7 +399,12 @@ ID_PREFIXES = {
     "vcvs": "E",
     "vccs": "G",
     "cccs": "F",
-    "ccvs": "H"
+    "ccvs": "H",
+    "zener": "D",
+    "led": "D",
+    "potentiometer": "RV",
+    "switch": "SW",
+    "transformer": "T"
 }
 
 TWO_TERMINAL_TYPES = ("resistor", "capacitor", "inductor", "voltage_source", "current_source")
@@ -354,7 +421,12 @@ DEFAULT_PIN_LAYOUTS = {
     "vcvs": ("p", "n", "cp", "cn"),
     "vccs": ("p", "n", "cp", "cn"),
     "cccs": ("p", "n"),
-    "ccvs": ("p", "n")
+    "ccvs": ("p", "n"),
+    "zener": ("anode", "cathode"),
+    "led": ("anode", "cathode"),
+    "potentiometer": ("a", "wiper", "b"),
+    "switch": ("p", "n", "cp", "cn"),
+    "transformer": ("p1", "p2", "s1", "s2")
 }
 
 def default_pins_for(comp_type: str) -> Dict[str, str]:

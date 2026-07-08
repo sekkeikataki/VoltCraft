@@ -192,6 +192,20 @@ class DatasheetScraper:
                 "params": {"Is": 1.1e-14, "beta_f": 300.0, "beta_r": 4.0, "Vt": 0.02585},
                 "manufacturer": "Nexperia",
                 "source": "Local-Scraped-Offline"
+            },
+            "1N4733A": {
+                "part_number": "1N4733A",
+                "type": "zener",
+                "params": {"Vz": 5.1, "Is": 1e-14, "Ibv": 1e-3, "Nbv": 1.0},
+                "manufacturer": "ON Semiconductor",
+                "source": "Local-Scraped-Offline"
+            },
+            "1N4740A": {
+                "part_number": "1N4740A",
+                "type": "zener",
+                "params": {"Vz": 10.0, "Is": 1e-14, "Ibv": 1e-3, "Nbv": 1.0},
+                "manufacturer": "Vishay",
+                "source": "Local-Scraped-Offline"
             }
         }
         

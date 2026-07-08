@@ -46,7 +46,12 @@ class DrawioCodec:
             "vcvs": ["p", "n", "cp", "cn"],
             "vccs": ["p", "n", "cp", "cn"],
             "cccs": ["p", "n"],
-            "ccvs": ["p", "n"]
+            "ccvs": ["p", "n"],
+            "zener": ["anode", "cathode"],
+            "led": ["anode", "cathode"],
+            "potentiometer": ["a", "wiper", "b"],
+            "switch": ["p", "n", "cp", "cn"],
+            "transformer": ["p1", "p2", "s1", "s2"]
         }
         return mapping.get(node_type, ["a", "b"])
 
