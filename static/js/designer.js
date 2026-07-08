@@ -36,7 +36,12 @@ class VoltCraftDesigner {
             vcvs: "M 0 10 L 30 10 M 0 30 L 30 30 M 50 5 L 65 20 L 50 35 L 35 20 Z M 46 16 L 54 16 M 50 12 L 50 20 M 46 26 L 54 26 M 65 20 L 100 10 M 65 20 L 100 30",
             vccs: "M 0 10 L 30 10 M 0 30 L 30 30 M 50 5 L 65 20 L 50 35 L 35 20 Z M 50 13 L 50 27 M 47 22 L 50 27 L 53 22 M 65 20 L 100 10 M 65 20 L 100 30",
             cccs: "M 0 20 L 35 20 M 50 5 L 65 20 L 50 35 L 35 20 Z M 50 13 L 50 27 M 47 22 L 50 27 L 53 22 M 65 20 L 100 20",
-            ccvs: "M 0 20 L 35 20 M 50 5 L 65 20 L 50 35 L 35 20 Z M 46 16 L 54 16 M 50 12 L 50 20 M 46 26 L 54 26 M 65 20 L 100 20"
+            ccvs: "M 0 20 L 35 20 M 50 5 L 65 20 L 50 35 L 35 20 Z M 46 16 L 54 16 M 50 12 L 50 20 M 46 26 L 54 26 M 65 20 L 100 20",
+            zener: "M 0 20 L 42 20 M 42 8 L 42 32 L 62 20 Z M 57 8 L 62 8 L 62 32 L 67 32 M 62 20 L 100 20",
+            led: "M 0 20 L 42 20 M 42 8 L 42 32 L 62 20 Z M 62 8 L 62 32 M 62 20 L 100 20 M 66 4 L 74 -2 M 70 -2 L 74 -2 L 74 2 M 72 10 L 80 4 M 76 4 L 80 4 L 80 8",
+            potentiometer: "M 0 20 L 18 20 L 23 12 L 31 28 L 39 12 L 47 28 L 55 12 L 63 28 L 71 12 L 77 20 L 100 20 M 50 0 L 50 14 M 45 8 L 50 14 L 55 8",
+            switch: "M 0 20 L 30 20 M 70 20 L 100 20 M 30 20 L 62 9 M 28 20 A 2 2 0 1 0 32 20 A 2 2 0 1 0 28 20 M 68 20 A 2 2 0 1 0 72 20 A 2 2 0 1 0 68 20 M 35 40 L 35 26 M 65 40 L 65 26",
+            transformer: "M 0 8 L 18 8 M 0 32 L 18 32 M 100 8 L 82 8 M 100 32 L 82 32 M 18 4 A 4 6 0 0 1 18 16 A 4 6 0 0 1 18 28 A 4 6 0 0 1 18 40 M 82 4 A 4 6 0 0 0 82 16 A 4 6 0 0 0 82 28 A 4 6 0 0 0 82 40 M 47 2 L 47 38 M 53 2 L 53 38"
         };
 
         // Suggested editable parameters per component type for the inspector
@@ -57,7 +62,12 @@ class VoltCraftDesigner {
             vcvs: { gain: 1 },
             vccs: { gm: 1e-3 },
             cccs: { gain: 1, control: "V1" },
-            ccvs: { r: 1000, control: "V1" }
+            ccvs: { r: 1000, control: "V1" },
+            zener: { Vz: 5.1, Is: 1e-14 },
+            led: { Is: 1e-20, N: 2 },
+            potentiometer: { R: 10000, wiper: 0.5 },
+            switch: { threshold: 2.5, Ron: 1, Roff: 1e9 },
+            transformer: { ratio: 2 }
         };
         this.selectedNodeId = null;
 
@@ -364,6 +374,20 @@ class VoltCraftDesigner {
                 } else if (node.type === "cccs" || node.type === "ccvs") {
                     if (pinName === "p") { pinX = 100; pinY = 20; }
                     else if (pinName === "n") { pinX = 0; pinY = 20; }
+                } else if (node.type === "potentiometer") {
+                    if (pinName === "a") { pinX = 0; pinY = 20; }
+                    else if (pinName === "b") { pinX = 100; pinY = 20; }
+                    else if (pinName === "wiper") { pinX = 50; pinY = 0; }
+                } else if (node.type === "switch") {
+                    if (pinName === "p") { pinX = 0; pinY = 20; }
+                    else if (pinName === "n") { pinX = 100; pinY = 20; }
+                    else if (pinName === "cp") { pinX = 35; pinY = 40; }
+                    else if (pinName === "cn") { pinX = 65; pinY = 40; }
+                } else if (node.type === "transformer") {
+                    if (pinName === "p1") { pinX = 0; pinY = 8; }
+                    else if (pinName === "p2") { pinX = 0; pinY = 32; }
+                    else if (pinName === "s1") { pinX = 100; pinY = 8; }
+                    else if (pinName === "s2") { pinX = 100; pinY = 32; }
                 } else if (node.type === "analog_comparator") {
                     if (pinName === "analog_in") { pinX = 0; pinY = 20; }
                     else if (pinName === "digital_out") { pinX = 100; pinY = 20; }

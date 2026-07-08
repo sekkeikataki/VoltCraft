@@ -12,6 +12,20 @@ def _positive_param(params: Dict[str, Any], key: str, default: float, component_
     return value
 
 
+def _safe_exp(x: float) -> float:
+    """exp() with the argument capped to keep Newton-Raphson from overflowing."""
+    return math.exp(min(x, 40.0))
+
+
+# Forward-junction defaults for the plain diode vs. an LED (higher Vf).
+# vmax is the per-iteration voltage clamp; the LED's higher forward drop
+# needs more headroom than the diode's SPICE-standard 2.0V.
+DIODE_DEFAULTS = {
+    "diode": {"Is": 1e-14, "N": 1.0, "vmax": 2.0},
+    "led": {"Is": 1e-20, "N": 2.0, "vmax": 5.0},
+}
+
+
 def _stamp_conductance(A: np.ndarray, ia: Optional[int], ib: Optional[int], g: float) -> None:
     """Stamps a conductance g between two node indices (None = ground)."""
     if ia is not None:
@@ -152,14 +166,46 @@ class ContinuousSolver:
             net_map[net] = idx
             idx += 1
             
-        # Find voltage-defining components
+        # Find voltage-defining components (each adds one or more MNA
+        # branch-current unknowns)
         voltage_components = []
         for node in self.nodes:
-            if node["type"] in ("voltage_source", "opamp", "digital_interface_out", "vcvs", "ccvs"):
+            if node["type"] in ("voltage_source", "opamp", "digital_interface_out",
+                                 "vcvs", "ccvs", "transformer"):
                 voltage_components.append(node)
 
         self._mappings_cache = (nets_list, net_map, voltage_components)
         return self._mappings_cache
+
+    @staticmethod
+    def _component_branch_keys(node: Dict[str, Any]) -> List[str]:
+        """Branch-current unknown keys a voltage-defining component adds."""
+        if node["type"] == "transformer":
+            return [f"{node['id']}:p", f"{node['id']}:s"]
+        return [node["id"]]
+
+    def _branch_layout(self, num_nets: int) -> Tuple[Dict[str, int], int]:
+        """
+        Assigns MNA row/column indices to every branch-current unknown,
+        starting after the node block. Single-branch components keep their
+        component id as the key (so existing stamps are unchanged); the
+        transformer contributes two keys, '<id>:p' and '<id>:s'.
+        Returns (branch_map, branch_count).
+        """
+        _, _, volt_comps = self._get_nets_and_mappings()
+        branch_map: Dict[str, int] = {}
+        idx = num_nets
+        for comp in volt_comps:
+            for key in self._component_branch_keys(comp):
+                branch_map[key] = idx
+                idx += 1
+        return branch_map, idx - num_nets
+
+    def _mna_size(self) -> int:
+        """Total MNA system dimension: node unknowns plus branch currents."""
+        _, net_map, _ = self._get_nets_and_mappings()
+        _, num_branches = self._branch_layout(len(net_map))
+        return len(net_map) + num_branches
 
     def limit_diode_voltage(self, v_old: float, v_new: float, vt: float, n: float, Is: float) -> float:
         """
@@ -173,6 +219,87 @@ class ContinuousSolver:
         elif v_new < 0.0 and (v_old - v_new) > 2.0 * nvt:
             return v_old - 2.0 * nvt
         return v_new
+
+    @staticmethod
+    def _prev_voltage(prev_x: Optional[np.ndarray], ia: Optional[int], ic: Optional[int],
+                      default: float) -> float:
+        """Voltage across a two-terminal device from the previous NR iterate."""
+        if prev_x is None:
+            return default
+        va = prev_x[ia] if ia is not None else 0.0
+        vc = prev_x[ic] if ic is not None else 0.0
+        return va - vc
+
+    def _diode_current(self, node: Dict[str, Any], v_d: float) -> Tuple[float, float, float]:
+        """
+        Shockley forward-junction linearization for a diode or LED. Returns
+        (conductance, current, clamped_voltage). The clamp matches the
+        original diode model so existing results stay bit-identical.
+        """
+        params = node.get("params", {})
+        defaults = DIODE_DEFAULTS.get(node["type"], DIODE_DEFAULTS["diode"])
+        Is = float(params.get("Is", defaults["Is"]))
+        N = float(params.get("N", defaults["N"]))
+        Vt = float(params.get("Vt", 0.02585))
+        vmax = defaults["vmax"]
+
+        v = max(-10.0, min(v_d, vmax))
+        exp_term = math.exp(v / (N * Vt))
+        i_d = Is * (exp_term - 1.0)
+        g_d = (Is / (N * Vt)) * exp_term
+        return g_d, i_d, v
+
+    def _zener_current(self, node: Dict[str, Any], v_d: float) -> Tuple[float, float, float]:
+        """
+        Zener model: a forward Shockley junction plus a reverse breakdown
+        term that turns on near v_d = -Vz. Returns (conductance, current,
+        clamped_voltage). Current is positive flowing anode -> cathode.
+        """
+        params = node.get("params", {})
+        Is = float(params.get("Is", 1e-14))
+        N = float(params.get("N", 1.0))
+        Vt = float(params.get("Vt", 0.02585))
+        Vz = float(params.get("Vz", 5.1))
+        Ibv = float(params.get("Ibv", 1e-3))   # reverse current at v_d = -Vz
+        Nbv = float(params.get("Nbv", 1.0))
+
+        # Clamp just past the breakdown knee so the reverse exponent cannot
+        # run away; the forward side keeps the diode's +2V clamp
+        v = max(-(Vz + 1.0), min(v_d, 2.0))
+
+        fwd_exp = math.exp(v / (N * Vt))
+        rev_exp = _safe_exp(-(v + Vz) / (Nbv * Vt))
+        i = Is * (fwd_exp - 1.0) - Ibv * rev_exp
+        g = (Is / (N * Vt)) * fwd_exp + (Ibv / (Nbv * Vt)) * rev_exp
+        return g, i, v
+
+    def _pot_conductances(self, node: Dict[str, Any]) -> Tuple[float, float]:
+        """(a-wiper, wiper-b) conductances for a potentiometer at its wiper."""
+        params = node.get("params", {})
+        R = _positive_param(params, "R", 10000.0, node["id"])
+        w = min(max(float(params.get("wiper", 0.5)), 1e-4), 1.0 - 1e-4)
+        return 1.0 / (R * w), 1.0 / (R * (1.0 - w))
+
+    def _switch_state(self, node: Dict[str, Any], x: Optional[np.ndarray]) -> bool:
+        """True when the control voltage meets the switch threshold."""
+        _, net_map, _ = self._get_nets_and_mappings()
+        pins = node.get("pins", {})
+        params = node.get("params", {})
+        icp = net_map.get(pins.get("cp", "n0"))
+        icn = net_map.get(pins.get("cn", "n0"))
+        v_ctrl = self._prev_voltage(x, icp, icn, default=0.0)
+        threshold = float(params.get("threshold", 2.5))
+        closed = v_ctrl >= threshold
+        # An inverted switch opens when the control is high
+        if bool(params.get("inverted", False)):
+            closed = not closed
+        return closed
+
+    def _switch_conductance(self, node: Dict[str, Any], x: Optional[np.ndarray]) -> float:
+        params = node.get("params", {})
+        ron = _positive_param(params, "Ron", 1.0, node["id"])
+        roff = _positive_param(params, "Roff", 1e9, node["id"])
+        return 1.0 / ron if self._switch_state(node, x) else 1.0 / roff
 
     def _mos_small_signal(self, node: Dict[str, Any], x: Optional[np.ndarray]) -> Dict[str, Any]:
         """
@@ -356,6 +483,52 @@ class ContinuousSolver:
                 i_const = ss["i_terms"][row] - sum(G[row][col] * volts[col] for col in range(3))
                 z[idxs[row]] -= i_const
 
+    def _stamp_transformer(self, A: np.ndarray, node: Dict[str, Any],
+                           net_map: Dict[str, int], volt_map: Dict[str, int]) -> None:
+        """
+        Ideal transformer with turns ratio a = Np:Ns. Adds two branch
+        currents (i_p into p1, i_s into s1) and enforces:
+            V(p1) - V(p2) = a * (V(s1) - V(s2))     (voltage ratio)
+            i_s = -a * i_p                           (power conservation)
+        The stamp is linear, so it serves DC, transient, and AC assembly.
+        """
+        n_id = node["id"]
+        pins = node.get("pins", {})
+        a = float(node.get("params", {}).get("ratio", 1.0))
+        if a == 0.0:
+            raise ValueError(f"Transformer '{n_id}' turns ratio must be non-zero")
+
+        p1 = net_map.get(pins.get("p1", "n0"))
+        p2 = net_map.get(pins.get("p2", "n0"))
+        s1 = net_map.get(pins.get("s1", "n0"))
+        s2 = net_map.get(pins.get("s2", "n0"))
+        br_p = volt_map[f"{n_id}:p"]
+        br_s = volt_map[f"{n_id}:s"]
+
+        # Branch-current incidence into the KCL rows
+        if p1 is not None:
+            A[p1, br_p] += 1.0
+        if p2 is not None:
+            A[p2, br_p] -= 1.0
+        if s1 is not None:
+            A[s1, br_s] += 1.0
+        if s2 is not None:
+            A[s2, br_s] -= 1.0
+
+        # Voltage-ratio constraint (row br_p)
+        if p1 is not None:
+            A[br_p, p1] += 1.0
+        if p2 is not None:
+            A[br_p, p2] -= 1.0
+        if s1 is not None:
+            A[br_p, s1] -= a
+        if s2 is not None:
+            A[br_p, s2] += a
+
+        # Current-ratio constraint (row br_s): i_s + a*i_p = 0
+        A[br_s, br_s] += 1.0
+        A[br_s, br_p] += a
+
     def _stamp_controlled_source(self, A: np.ndarray, node: Dict[str, Any],
                                  net_map: Dict[str, int], volt_map: Dict[str, int]) -> None:
         """
@@ -469,17 +642,13 @@ class ContinuousSolver:
         nets_list, net_map, volt_comps = self._get_nets_and_mappings()
         
         num_nets = len(net_map)
-        num_volts = len(volt_comps)
-        size = num_nets + num_volts
-        
+        # Build index mapping for voltage branches (transformers add two)
+        volt_map, num_branches = self._branch_layout(num_nets)
+        size = num_nets + num_branches
+
         A = np.zeros((size, size))
         z = np.zeros(size)
-        
-        # Build index mapping for voltage branches
-        volt_map = {}
-        for i, comp in enumerate(volt_comps):
-            volt_map[comp["id"]] = num_nets + i
-            
+
         # Add minimal Gmin conductances to prevent floating nodes
         for idx in range(num_nets):
             A[idx, idx] += self.g_min
@@ -512,34 +681,32 @@ class ContinuousSolver:
                 _stamp_voltage_branch(A, ia, ib, br_idx)
                 z[br_idx] = source_voltage_at(params, t)
 
-            elif n_type == "diode":
+            elif n_type in ("diode", "led"):
                 ia = pin_index(pins, "anode")
                 ic = pin_index(pins, "cathode")
-
-                Is = float(params.get("Is", 1e-14))
-                N = float(params.get("N", 1.0))
-                Vt = float(params.get("Vt", 0.02585))
-
-                # Extract previous diode voltage for NR linearization
-                if prev_x is not None:
-                    v_a = prev_x[ia] if ia is not None else 0.0
-                    v_c = prev_x[ic] if ic is not None else 0.0
-                    v_d = v_a - v_c
-                else:
-                    # DC initial guess
-                    v_d = 0.6
-
-                # Compute linearized diode companion parameters
-                v_d = max(-10.0, min(v_d, 2.0))  # Sanity clamp
-                exp_term = math.exp(v_d / (N * Vt))
-                i_d = Is * (exp_term - 1.0)
-                g_d = (Is / (N * Vt)) * exp_term
-                # Companion source I_eq = i_d - g_d*v_d flows anode->cathode;
-                # as an injection that is +(g_d*v_d - i_d) into the anode
-                i_eq = g_d * v_d - i_d
-
+                v_d = self._prev_voltage(prev_x, ia, ic, default=0.6)
+                g_d, i_d, v_c = self._diode_current(node, v_d)
+                # Companion source I_eq = i_d - g_d*v_c flows anode->cathode;
+                # as an injection that is +(g_d*v_c - i_d) into the anode
                 _stamp_conductance(A, ia, ic, g_d)
-                _stamp_current_injection(z, ia, ic, i_eq)
+                _stamp_current_injection(z, ia, ic, g_d * v_c - i_d)
+
+            elif n_type == "zener":
+                ia = pin_index(pins, "anode")
+                ic = pin_index(pins, "cathode")
+                v_d = self._prev_voltage(prev_x, ia, ic, default=0.6)
+                g_z, i_z, v_c = self._zener_current(node, v_d)
+                _stamp_conductance(A, ia, ic, g_z)
+                _stamp_current_injection(z, ia, ic, g_z * v_c - i_z)
+
+            elif n_type == "potentiometer":
+                g_aw, g_wb = self._pot_conductances(node)
+                _stamp_conductance(A, pin_index(pins, "a"), pin_index(pins, "wiper"), g_aw)
+                _stamp_conductance(A, pin_index(pins, "wiper"), pin_index(pins, "b"), g_wb)
+
+            elif n_type == "switch":
+                _stamp_conductance(A, pin_index(pins, "p"), pin_index(pins, "n"),
+                                   self._switch_conductance(node, prev_x))
 
             elif n_type == "inductor":
                 l_val = _positive_param(params, "L", 1e-3, n_id)
@@ -591,6 +758,9 @@ class ContinuousSolver:
 
             elif n_type in ("vcvs", "vccs", "cccs", "ccvs"):
                 self._stamp_controlled_source(A, node, net_map, volt_map)
+
+            elif n_type == "transformer":
+                self._stamp_transformer(A, node, net_map, volt_map)
 
             elif n_type == "digital_interface_out":
                 v_val = float(params.get("V", 0.0))
@@ -708,7 +878,7 @@ class ContinuousSolver:
         Employs source-stepping homotopy to force convergence for nonlinear diodes.
         """
         nets_list, net_map, volt_comps = self._get_nets_and_mappings()
-        size = len(net_map) + len(volt_comps)
+        size = self._mna_size()
         
         # Newton-Raphson Loop with Source Stepping
         # Start at scale 0.0 (fully off) to 1.0 (fully on)
@@ -803,8 +973,9 @@ class ContinuousSolver:
         # Return the complete index map (nets plus voltage branch currents)
         # so every entry of x is addressable, matching assemble_mna's map
         cmap = dict(net_map)
-        for i, comp in enumerate(volt_comps):
-            cmap[f"branch_{comp['id']}"] = len(net_map) + i
+        branch_map, _ = self._branch_layout(len(net_map))
+        for key, idx in branch_map.items():
+            cmap[f"branch_{key}"] = idx
         return x, cmap
 
     def solve_transient(self, t_start: float, t_stop: float, dt: float, method: str = "backward_euler", uic: bool = False) -> Tuple[np.ndarray, List[float], Dict[str, int]]:
@@ -817,7 +988,7 @@ class ContinuousSolver:
             raise ValueError(f"t_stop ({t_stop}) must be greater than t_start ({t_start})")
 
         nets_list, net_map, volt_comps = self._get_nets_and_mappings()
-        size = len(net_map) + len(volt_comps)
+        size = self._mna_size()
 
         # Initial condition from DC analysis
         x, cmap = self.solve_dc()
@@ -896,7 +1067,7 @@ class ContinuousSolver:
         err_scale = (2.0 ** order) - 1.0
 
         nets_list, net_map, volt_comps = self._get_nets_and_mappings()
-        size = len(net_map) + len(volt_comps)
+        size = self._mna_size()
 
         x, cmap = self.solve_dc()
         if uic:
@@ -989,7 +1160,7 @@ class ContinuousSolver:
 
         values = [float(v) for v in np.linspace(start, stop, points)]
         _, net_map, volt_comps = self._get_nets_and_mappings()
-        size = len(net_map) + len(volt_comps)
+        size = self._mna_size()
         results = np.zeros((size, points))
 
         cmap: Dict[str, int] = {}
@@ -1059,7 +1230,7 @@ class ContinuousSolver:
             )
 
         _, net_map, volt_comps = self._get_nets_and_mappings()
-        size = len(net_map) + len(volt_comps)
+        size = self._mna_size()
         samples = np.zeros((size, runs))
 
         cmap: Dict[str, int] = {}
@@ -1109,12 +1280,11 @@ class ContinuousSolver:
         """
         nets_list, net_map, volt_comps = self._get_nets_and_mappings()
         num_nets = len(net_map)
-        size = num_nets + len(volt_comps)
+        volt_map, num_branches = self._branch_layout(num_nets)
+        size = num_nets + num_branches
 
         A = np.zeros((size, size), dtype=complex)
         z = np.zeros(size, dtype=complex)
-
-        volt_map = {comp["id"]: num_nets + i for i, comp in enumerate(volt_comps)}
 
         for idx in range(num_nets):
             A[idx, idx] += self.g_min
@@ -1162,19 +1332,29 @@ class ContinuousSolver:
                 l_val = _positive_param(params, "L", 1e-3, n_id)
                 _stamp_conductance(A, pin_index(pins, "a"), pin_index(pins, "b"), 1.0 / (1j * omega * l_val))
 
-            elif n_type == "diode":
+            elif n_type in ("diode", "led"):
                 # Small-signal conductance at the DC operating point
                 ia = pin_index(pins, "anode")
                 ic = pin_index(pins, "cathode")
-                Is = float(params.get("Is", 1e-14))
-                N = float(params.get("N", 1.0))
-                Vt = float(params.get("Vt", 0.02585))
-
-                v_a = x_op[ia] if ia is not None else 0.0
-                v_c = x_op[ic] if ic is not None else 0.0
-                v_d = max(-10.0, min(v_a - v_c, 2.0))
-                g_d = (Is / (N * Vt)) * math.exp(v_d / (N * Vt))
+                v_d = self._prev_voltage(x_op, ia, ic, default=0.0)
+                g_d, _i, _v = self._diode_current(node, v_d)
                 _stamp_conductance(A, ia, ic, g_d)
+
+            elif n_type == "zener":
+                ia = pin_index(pins, "anode")
+                ic = pin_index(pins, "cathode")
+                v_d = self._prev_voltage(x_op, ia, ic, default=0.0)
+                g_z, _i, _v = self._zener_current(node, v_d)
+                _stamp_conductance(A, ia, ic, g_z)
+
+            elif n_type == "potentiometer":
+                g_aw, g_wb = self._pot_conductances(node)
+                _stamp_conductance(A, pin_index(pins, "a"), pin_index(pins, "wiper"), g_aw)
+                _stamp_conductance(A, pin_index(pins, "wiper"), pin_index(pins, "b"), g_wb)
+
+            elif n_type == "switch":
+                _stamp_conductance(A, pin_index(pins, "p"), pin_index(pins, "n"),
+                                   self._switch_conductance(node, x_op))
 
             elif n_type == "current_source":
                 # Injects only its declared AC magnitude (DC value is bias)
@@ -1218,6 +1398,9 @@ class ContinuousSolver:
             elif n_type in ("vcvs", "vccs", "cccs", "ccvs"):
                 self._stamp_controlled_source(A, node, net_map, volt_map)
 
+            elif n_type == "transformer":
+                self._stamp_transformer(A, node, net_map, volt_map)
+
             elif n_type == "digital_interface_out":
                 # A driven rail is an AC ground
                 br_idx = volt_map[n_id]
@@ -1258,7 +1441,7 @@ class ContinuousSolver:
         x_op, cmap = self.solve_dc()
 
         nets_list, net_map, volt_comps = self._get_nets_and_mappings()
-        size = len(net_map) + len(volt_comps)
+        size = self._mna_size()
 
         decades = math.log10(f_stop / f_start)
         num_points = max(2, int(math.ceil(decades * points_per_decade)) + 1)
@@ -1291,7 +1474,7 @@ class ContinuousSolver:
         so a delivering source reports negative current and power.
         """
         nets_list, net_map, volt_comps = self._get_nets_and_mappings()
-        volt_map = {comp["id"]: len(net_map) + i for i, comp in enumerate(volt_comps)}
+        volt_map, _ = self._branch_layout(len(net_map))
 
         def net_voltage(pins: Dict[str, str], pin_name: str) -> float:
             idx = net_map.get(pins.get(pin_name, "n0"))
@@ -1308,14 +1491,25 @@ class ContinuousSolver:
                 v = net_voltage(pins, "a") - net_voltage(pins, "b")
                 i = v / _positive_param(params, "R", 1000.0, n_id)
                 report[n_id] = {"v": v, "i": i, "p": v * i}
-            elif n_type == "diode":
+            elif n_type in ("diode", "led"):
                 v_d = net_voltage(pins, "anode") - net_voltage(pins, "cathode")
-                Is = float(params.get("Is", 1e-14))
-                N = float(params.get("N", 1.0))
-                Vt = float(params.get("Vt", 0.02585))
-                v_lim = max(-10.0, min(v_d, 2.0))
-                i = Is * (math.exp(v_lim / (N * Vt)) - 1.0)
+                _g, i, _v = self._diode_current(node, v_d)
                 report[n_id] = {"v": v_d, "i": i, "p": v_d * i}
+            elif n_type == "zener":
+                v_d = net_voltage(pins, "anode") - net_voltage(pins, "cathode")
+                _g, i, _v = self._zener_current(node, v_d)
+                report[n_id] = {"v": v_d, "i": i, "p": v_d * i}
+            elif n_type == "potentiometer":
+                g_aw, g_wb = self._pot_conductances(node)
+                v_aw = net_voltage(pins, "a") - net_voltage(pins, "wiper")
+                v_wb = net_voltage(pins, "wiper") - net_voltage(pins, "b")
+                i_aw = v_aw * g_aw
+                report[n_id] = {"v": net_voltage(pins, "a") - net_voltage(pins, "b"),
+                                "i": i_aw, "p": v_aw * i_aw + v_wb * (v_wb * g_wb)}
+            elif n_type == "switch":
+                v = net_voltage(pins, "p") - net_voltage(pins, "n")
+                i = v * self._switch_conductance(node, x)
+                report[n_id] = {"v": v, "i": i, "p": v * i, "closed": float(self._switch_state(node, x))}
             elif n_type == "voltage_source":
                 v = net_voltage(pins, "a") - net_voltage(pins, "b")
                 i = float(x[volt_map[n_id]])
@@ -1345,6 +1539,11 @@ class ContinuousSolver:
                 i_ctrl = float(x[volt_map[control]]) if control in volt_map else 0.0
                 i = float(params.get("gain", 1.0)) * i_ctrl
                 report[n_id] = {"v": v, "i": i, "p": v * i}
+            elif n_type == "transformer":
+                v_p = net_voltage(pins, "p1") - net_voltage(pins, "p2")
+                v_s = net_voltage(pins, "s1") - net_voltage(pins, "s2")
+                i_p = float(x[volt_map[f"{n_id}:p"]])
+                report[n_id] = {"v_pri": v_p, "v_sec": v_s, "i": i_p, "p": v_p * i_p}
             elif n_type in ("nmos", "pmos"):
                 ss = self._mos_small_signal(node, x)
                 report[n_id] = {
