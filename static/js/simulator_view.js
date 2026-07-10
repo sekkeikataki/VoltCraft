@@ -67,6 +67,8 @@ class VoltCraftSimulatorView {
             this.plotMonteCarlo(data);
         } else if (mode === "ac") {
             this.plotAC(data);
+        } else if (mode === "digital") {
+            this.plotDigital(data);
         } else if (mode === "mixed") {
             this.plotMixed(data);
         }
@@ -418,18 +420,32 @@ class VoltCraftSimulatorView {
         }
 
         // Plot digital timelines
+        const tMin = a_times ? a_times[0] : 0.0;
+        const tMax = a_times ? a_times[a_times.length - 1] : 0.001;
+        this.renderDigitalTimelines(data.digital_waveforms, tMin, tMax);
+    }
+
+    plotDigital(data) {
+        // Pure event-driven run: timelines span from zero to the last event
+        const d_waves = data.logs;
+        if (!d_waves) return;
+        let tMax = 0.0;
+        Object.values(d_waves).forEach(logList => {
+            logList.forEach(([t]) => { if (t > tMax) tMax = t; });
+        });
+        this.renderDigitalTimelines(d_waves, 0.0, tMax || 1e-3);
+    }
+
+    renderDigitalTimelines(d_waves, tMin, tMax) {
         const w_di = this.digitalSvg.clientWidth || 380;
         const h_di = this.digitalSvg.clientHeight || 140;
 
-        const d_waves = data.digital_waveforms;
         if (!d_waves || Object.keys(d_waves).length === 0) {
             return;
         }
 
         const d_nets = Object.keys(d_waves);
         const rowHeight = (h_di - 40) / d_nets.length;
-        const tMin = a_times ? a_times[0] : 0.0;
-        const tMax = a_times ? a_times[a_times.length - 1] : 0.001;
 
         // Draw horizontal logic separators
         d_nets.forEach((net, idx) => {

@@ -96,6 +96,8 @@ class VoltCraftApp {
         let params;
         if (mode === "ac") {
             params = { f_start: 1.0, f_stop: 1e6, points_per_decade: 20 };
+        } else if (mode === "digital") {
+            params = { t_stop: 0.01 };   // ten cycles of the default 1 kHz clock
         } else if (mode === "monte_carlo") {
             params = { runs: 200, distribution: "uniform" };
         } else if (mode === "dc_sweep") {

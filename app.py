@@ -190,6 +190,21 @@ characteristics:
 An ideal magnetically-coupled two-winding transformer. Voltage scales by
 the turns ratio and current scales inversely, conserving power - the core
 of AC power conversion and isolation.
+""",
+    "flipflop": """---
+family: flipflop
+iec_code: IEC-60617-12
+equation: q <= d on rising clk edge (after delay)
+characteristics:
+  - Edge-triggered D flip-flop (type digital_dff) with q and q_bar
+  - Params: delay [s], init ("0" or "1")
+  - Pair with digital_clock (freq, duty) for counters and registers
+---
+# D Flip-Flops
+The storage element of sequential logic. On each rising clock edge the d
+input is latched into q (q_bar is its complement). Wiring d to q_bar
+divides the clock by two; chained stages build ripple counters and shift
+registers.
 """
 }
 
@@ -404,7 +419,9 @@ ID_PREFIXES = {
     "led": "D",
     "potentiometer": "RV",
     "switch": "SW",
-    "transformer": "T"
+    "transformer": "T",
+    "digital_dff": "FF",
+    "digital_clock": "CLK"
 }
 
 TWO_TERMINAL_TYPES = ("resistor", "capacitor", "inductor", "voltage_source", "current_source")
@@ -426,7 +443,9 @@ DEFAULT_PIN_LAYOUTS = {
     "led": ("anode", "cathode"),
     "potentiometer": ("a", "wiper", "b"),
     "switch": ("p", "n", "cp", "cn"),
-    "transformer": ("p1", "p2", "s1", "s2")
+    "transformer": ("p1", "p2", "s1", "s2"),
+    "digital_dff": ("d", "clk", "q", "q_bar"),
+    "digital_clock": ("out",)
 }
 
 def default_pins_for(comp_type: str) -> Dict[str, str]:
