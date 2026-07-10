@@ -247,6 +247,14 @@
                             <span class="text-[10px] font-semibold text-center leading-none">Interface Out</span>
                             <span class="text-[8px] text-gray-600 mt-1">DAC Link</span>
                         </button>
+                        <button class="tool-btn flex flex-col items-center justify-center p-2 rounded-lg bg-gray-950/40 border border-gray-850 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-300 transition duration-150" data-type="digital_dff">
+                            <span class="text-xs font-semibold">D Flip-Flop</span>
+                            <span class="text-[8px] text-gray-600">Edge FF</span>
+                        </button>
+                        <button class="tool-btn flex flex-col items-center justify-center p-2 rounded-lg bg-gray-950/40 border border-gray-850 text-gray-400 hover:border-cyan-500/30 hover:text-cyan-300 transition duration-150" data-type="digital_clock">
+                            <span class="text-xs font-semibold">Clock</span>
+                            <span class="text-[8px] text-gray-600">freq / duty</span>
+                        </button>
                     </div>
                 </div>
                 <!-- Component Inspector -->
@@ -305,6 +313,7 @@
                         <option value="dc_sweep">DC Param Sweep</option>
                         <option value="monte_carlo">Monte Carlo (DC)</option>
                         <option value="ac">AC Sweep (Bode)</option>
+                        <option value="digital">Digital Logic (Event)</option>
                         <option value="mixed">Mixed Co-Simulation</option>
                     </select>
                     <button id="btn-simulate" class="px-3 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-xs font-semibold transition tracking-wide text-white uppercase shadow-md shadow-cyan-500/10">

@@ -1722,6 +1722,13 @@ class ContinuousSolver:
         return Zm, em, loop_paths
 
 
+# Gates whose outputs depend on stored state and clock edges rather than a
+# pure function of the current inputs
+SEQUENTIAL_GATE_TYPES = ("digital_dff",)
+
+_LOGIC_INVERT = {"0": "1", "1": "0"}
+
+
 class DiscreteEventScheduler:
     """
     Event-driven digital logic simulation scheduler.
@@ -1733,6 +1740,9 @@ class DiscreteEventScheduler:
         self.output_logs: Dict[str, List[Tuple[float, Any]]] = {}
         self._topology_source: Any = None
         self._topology: Any = None
+        # Next unscheduled cycle number per digital_clock component, so
+        # repeated run_until calls extend the timeline without duplicates
+        self._clock_cycle: Dict[str, int] = {}
 
     def _build_gate_topology(self, netlist_comps: List[Dict[str, Any]]) -> Tuple[Dict, Dict, Dict, Dict]:
         """
@@ -1777,6 +1787,71 @@ class DiscreteEventScheduler:
         """
         self.event_counter += 1
         heapq.heappush(self.queue, (t, self.event_counter, node_id, val))
+
+    def schedule_clock_edges(self, netlist_comps: List[Dict[str, Any]], t_limit: float) -> None:
+        """
+        Pre-schedules the edges of every digital_clock component up to
+        t_limit. Rising edges land at k/freq, falling edges duty later.
+        Each cycle is scheduled exactly once even across repeated calls
+        with a growing t_limit.
+        """
+        for node in netlist_comps:
+            if node["type"] != "digital_clock":
+                continue
+            params = node.get("params", {})
+            freq = float(params.get("freq", 1000.0))
+            if freq <= 0.0:
+                raise ValueError(f"Clock '{node['id']}' requires a positive freq")
+            duty = min(max(float(params.get("duty", 0.5)), 0.01), 0.99)
+            out_net = node.get("pins", {}).get("out", "n0")
+
+            period = 1.0 / freq
+            k = self._clock_cycle.get(node["id"], 0)
+            while k * period <= t_limit:
+                self.schedule_event(k * period, out_net, "1")
+                self.schedule_event(k * period + duty * period, out_net, "0")
+                k += 1
+            self._clock_cycle[node["id"]] = k
+
+    def _seed_sequential_outputs(self, gate_by_id: Dict[str, Dict[str, Any]],
+                                 gate_outputs: Dict[str, Dict[str, str]]) -> None:
+        """
+        Applies each flip-flop's initial q/q_bar level as a silent initial
+        condition, so feedback nets (e.g. d wired to q_bar) read a defined
+        value before the first clock edge.
+        """
+        for g_id, gate in gate_by_id.items():
+            if gate["type"] not in SEQUENTIAL_GATE_TYPES:
+                continue
+            init = str(gate.get("params", {}).get("init", "0"))
+            outs = gate_outputs.get(g_id, {})
+            if "q" in outs and outs["q"] not in self.states:
+                self.states[outs["q"]] = init
+            if "q_bar" in outs and outs["q_bar"] not in self.states:
+                self.states[outs["q_bar"]] = _LOGIC_INVERT.get(init, "X")
+
+    def _evaluate_sequential(self, gate: Dict[str, Any], inputs_map: Dict[str, str],
+                             outputs_map: Dict[str, str], changed_net: str,
+                             old_val: Any, new_val: Any, t: float) -> None:
+        """
+        Reacts to an input transition on a stateful gate. A D flip-flop
+        latches its d input into q (and its complement into q_bar) only on
+        a rising edge of its clk net; every other input change is ignored.
+        """
+        if gate["type"] == "digital_dff":
+            clk_net = inputs_map.get("clk")
+            # An unset previous state counts as low, so the first-ever
+            # clock event can still be a clean rising edge
+            if changed_net != clk_net or new_val != "1" or old_val not in (None, "0"):
+                return
+            d_val = self.states.get(inputs_map.get("d"), "0")
+            q_val = d_val if d_val in ("0", "1") else "X"
+
+            t_d = float(gate.get("params", {}).get("delay", 1e-9))
+            if "q" in outputs_map:
+                self.schedule_event(t + t_d, outputs_map["q"], q_val)
+            if "q_bar" in outputs_map:
+                self.schedule_event(t + t_d, outputs_map["q_bar"], _LOGIC_INVERT.get(q_val, "X"))
 
     def evaluate_gate(self, g_type: str, inputs: Dict[str, Any], params: Dict[str, Any]) -> Any:
         """
@@ -1835,13 +1910,16 @@ class DiscreteEventScheduler:
         Evaluates interconnected gates on output mutations.
         """
         gate_inputs, gate_outputs, gate_by_id, net_listeners = self._build_gate_topology(netlist_comps)
+        self._seed_sequential_outputs(gate_by_id, gate_outputs)
+        self.schedule_clock_edges(netlist_comps, t_limit)
 
         # Main timeline scheduler loop
         while self.queue and self.queue[0][0] <= t_limit:
             t, _, target_net, new_val = heapq.heappop(self.queue)
 
-            # Skip redundant states
-            if self.states.get(target_net) == new_val:
+            # Skip redundant states (keep the previous value for edge detection)
+            old_val = self.states.get(target_net)
+            if old_val == new_val:
                 continue
 
             self.states[target_net] = new_val
@@ -1849,10 +1927,15 @@ class DiscreteEventScheduler:
 
             # Re-evaluate downstream gates that read this mutated net
             for g_id in net_listeners.get(target_net, ()):
-                inputs_map = gate_inputs[g_id]
-                curr_input_states = {pin: self.states.get(net, "0") for pin, net in inputs_map.items()}
-
                 gate = gate_by_id[g_id]
+                inputs_map = gate_inputs[g_id]
+
+                if gate["type"] in SEQUENTIAL_GATE_TYPES:
+                    self._evaluate_sequential(gate, inputs_map, gate_outputs[g_id],
+                                              target_net, old_val, new_val, t)
+                    continue
+
+                curr_input_states = {pin: self.states.get(net, "0") for pin, net in inputs_map.items()}
                 t_d = float(gate.get("params", {}).get("delay", 1e-9))
 
                 # Evaluate outputs and schedule future updates
@@ -1889,6 +1972,11 @@ class MixedSignalCoSimulator:
 
         history = {"integration_method": "backward_euler"}
         self.analog.init_energy_storage_history(x, history)
+
+        # Pre-schedule clock generator edges for the whole window: the
+        # timestep arbitration below peeks the event queue, so clocks must
+        # already be on the timeline before the loop starts
+        self.digital.schedule_clock_edges(self.analog.nodes, t_stop)
 
         # Boundary Interface Mappings
         # Digital outputs drive analog voltage sources.

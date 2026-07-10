@@ -115,6 +115,12 @@ Digital components (AND, OR, NOT, NAND, NOR, XOR, comparators) are simulated usi
 *   Timeline events are tracked inside a `heapq` priority queue: `(time, scheduling_id, net_id, state)`.
 *   Zero-delay logic oscillations are resolved via delta-timestep queue segments.
 
+### Sequential Logic & Clocking
+Beyond combinational gates, the scheduler supports edge-triggered state:
+*   **D flip-flop** (`digital_dff`, prefix FF): on each rising edge of its `clk` net, `d` is latched into `q` after `delay`, with `q_bar` as the complement; `init` seeds the power-on state so feedback nets read a defined value before the first edge. Every other input change is ignored — verified by divide-by-two (d←q̄), ripple-counter (f/4), and same-clock shift-register tests where each stage provably captures the *previous* stage's old value (the propagation delay resolves the classic race).
+*   **Clock generator** (`digital_clock`, prefix CLK): pre-schedules its own rising/falling edges from `freq` and `duty`, idempotently across repeated `run_until` calls and pre-loaded across the whole window in mixed-signal runs so timestep arbitration sees them.
+*   The **Digital Logic (Event)** UI mode renders the event logs as stacked logic timelines.
+
 ### Timestep Co-Simulation Synchronization
 Mixed-signal coordination coordinates continuous-discrete border nets:
 *   **Timestep Arbitration:** The analog integrator truncates its integration step $\Delta t_{ana}$ dynamically to align with the next scheduled digital queue event $t_{dig}$.

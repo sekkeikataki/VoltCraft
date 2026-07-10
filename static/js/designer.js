@@ -40,6 +40,8 @@ class VoltCraftDesigner {
             zener: "M 0 20 L 42 20 M 42 8 L 42 32 L 62 20 Z M 57 8 L 62 8 L 62 32 L 67 32 M 62 20 L 100 20",
             led: "M 0 20 L 42 20 M 42 8 L 42 32 L 62 20 Z M 62 8 L 62 32 M 62 20 L 100 20 M 66 4 L 74 -2 M 70 -2 L 74 -2 L 74 2 M 72 10 L 80 4 M 76 4 L 80 4 L 80 8",
             potentiometer: "M 0 20 L 18 20 L 23 12 L 31 28 L 39 12 L 47 28 L 55 12 L 63 28 L 71 12 L 77 20 L 100 20 M 50 0 L 50 14 M 45 8 L 50 14 L 55 8",
+            digital_dff: "M 0 12 L 30 12 M 0 28 L 30 28 M 30 5 L 70 5 L 70 35 L 30 35 Z M 30 24 L 37 28 L 30 32 M 70 12 L 100 12 M 70 28 L 100 28 M 36 16 L 42 16 M 36 12 L 36 20 M 39 12 L 42 16 L 39 20",
+            digital_clock: "M 70 20 L 100 20 M 25 5 L 70 5 L 70 35 L 25 35 Z M 31 27 L 31 13 L 41 13 L 41 27 L 51 27 L 51 13 L 61 13 L 61 27",
             switch: "M 0 20 L 30 20 M 70 20 L 100 20 M 30 20 L 62 9 M 28 20 A 2 2 0 1 0 32 20 A 2 2 0 1 0 28 20 M 68 20 A 2 2 0 1 0 72 20 A 2 2 0 1 0 68 20 M 35 40 L 35 26 M 65 40 L 65 26",
             transformer: "M 0 8 L 18 8 M 0 32 L 18 32 M 100 8 L 82 8 M 100 32 L 82 32 M 18 4 A 4 6 0 0 1 18 16 A 4 6 0 0 1 18 28 A 4 6 0 0 1 18 40 M 82 4 A 4 6 0 0 0 82 16 A 4 6 0 0 0 82 28 A 4 6 0 0 0 82 40 M 47 2 L 47 38 M 53 2 L 53 38"
         };
@@ -67,7 +69,9 @@ class VoltCraftDesigner {
             led: { Is: 1e-20, N: 2 },
             potentiometer: { R: 10000, wiper: 0.5 },
             switch: { threshold: 2.5, Ron: 1, Roff: 1e9 },
-            transformer: { ratio: 2 }
+            transformer: { ratio: 2 },
+            digital_dff: { delay: 1e-9, init: "0" },
+            digital_clock: { freq: 1000, duty: 0.5 }
         };
         this.selectedNodeId = null;
 
@@ -354,6 +358,13 @@ class VoltCraftDesigner {
                     if (pinName === "non_inverting") { pinX = 0; pinY = 10; }
                     else if (pinName === "inverting") { pinX = 0; pinY = 30; }
                     else if (pinName === "out") { pinX = 100; pinY = 20; }
+                } else if (node.type === "digital_dff") {
+                    if (pinName === "d") { pinX = 0; pinY = 12; }
+                    else if (pinName === "clk") { pinX = 0; pinY = 28; }
+                    else if (pinName === "q") { pinX = 100; pinY = 12; }
+                    else if (pinName === "q_bar") { pinX = 100; pinY = 28; }
+                } else if (node.type === "digital_clock") {
+                    if (pinName === "out") { pinX = 100; pinY = 20; }
                 } else if (node.type.startsWith("digital_") && node.type !== "digital_interface_out") {
                     if (pinName === "a") { pinX = 0; pinY = 10; }
                     else if (pinName === "b") { pinX = 0; pinY = 30; }
